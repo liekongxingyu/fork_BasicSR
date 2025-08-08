@@ -58,6 +58,7 @@ class PairedImageDataset(data.Dataset):
             self.paths = paired_paths_from_meta_info_file([self.lq_folder, self.gt_folder], ['lq', 'gt'],
                                                           self.opt['meta_info_file'], self.filename_tmpl)
         else:
+            # 要混合训练集的话，核心就修改下面这行代码，以及options.py中的dataroot_gt和dataroot_lq,改成列表形式（先添加一个是否混合数据集的参数）
             self.paths = paired_paths_from_folder([self.lq_folder, self.gt_folder], ['lq', 'gt'], self.filename_tmpl)
 
     def __getitem__(self, index):
