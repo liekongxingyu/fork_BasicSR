@@ -193,7 +193,7 @@ def get_env_info():
     import torch
     import torchvision
 
-    from basicsr.version import __version__
+    __version__ = '1.4.2'
     msg = r"""
                 ____                _       _____  ____
                / __ ) ____ _ _____ (_)_____/ ___/ / __ \
