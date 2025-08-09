@@ -1,3 +1,4 @@
+import os
 import torch
 from collections import OrderedDict
 from os import path as osp
@@ -129,6 +130,8 @@ class SRModel(BaseModel):
                 self.output = self.net_g(self.lq)
             self.net_g.train()
 
+
+    # 这个函数是用来更新网络参数的指数移动平均值
     def test_selfensemble(self):
         # TODO: to be tested
         # 8 augmentations
@@ -181,6 +184,7 @@ class SRModel(BaseModel):
         if self.opt['rank'] == 0:
             self.nondist_validation(dataloader, current_iter, tb_logger, save_img)
 
+    # 分布式验证全流程
     def nondist_validation(self, dataloader, current_iter, tb_logger, save_img):
         dataset_name = dataloader.dataset.opt['name']
         with_metrics = self.opt['val'].get('metrics') is not None
@@ -219,16 +223,27 @@ class SRModel(BaseModel):
 
             if save_img:
                 if self.opt['is_train']:
-                    save_img_path = osp.join(self.opt['path']['visualization'], img_name,
-                                             f'{img_name}_{current_iter}.png')
+                    save_img_path = osp.join(self.opt['path']['visualization'], dataset_name,f'{img_name}_{current_iter}.png')
                 else:
                     if self.opt['val']['suffix']:
                         save_img_path = osp.join(self.opt['path']['visualization'], dataset_name,
-                                                 f'{img_name}_{self.opt["val"]["suffix"]}.png')
+                                                f'{img_name}_{self.opt["val"]["suffix"]}.png')
                     else:
                         save_img_path = osp.join(self.opt['path']['visualization'], dataset_name,
-                                                 f'{img_name}_{self.opt["name"]}.png')
-                imwrite(sr_img, save_img_path)
+                                                f'{img_name}_{self.opt["name"]}.png')
+                
+                # 调试信息
+                # print(f"图像数据: {sr_img.shape if sr_img is not None else 'None'}")
+                print(f"保存路径: {save_img_path}")
+                # print(f"目录存在: {osp.exists(osp.dirname(save_img_path))}")
+                
+                # 确保目录存在
+                os.makedirs(osp.dirname(save_img_path), exist_ok=True)
+                
+                # 保存并检查结果
+                success = imwrite(sr_img, save_img_path)
+                # print(f"保存{'成功' if success else '失败'}")
+
 
             if with_metrics:
                 # calculate metrics
