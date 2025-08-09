@@ -9,10 +9,14 @@ manual_seed: 10
 # dataset and data loader settings
 datasets:
   train:
-    name: DIV2K
+    name: MixTrain
     type: PairedImageDataset
-    dataroot_gt: ../Dataset/Set5/x2/HR
-    dataroot_lq: ../Dataset/Set5/x2/LR
+    dataroot_gt1: ../Dataset/Set5/x2/HR
+    dataroot_lq1: ../Dataset/Set5/x2/LR
+
+    dataroot_gt2: ../Dataset/BSDS200/x2/HR
+    dataroot_lq2: ../Dataset/BSDS200/x2/LR
+
     # (for lmdb)
     # dataroot_gt: datasets/DIV2K/DIV2K_train_HR_sub.lmdb
     # dataroot_lq: datasets/DIV2K/DIV2K_train_LR_bicubic_X2_sub.lmdb

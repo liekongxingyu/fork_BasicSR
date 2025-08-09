@@ -198,39 +198,53 @@ def paired_paths_from_meta_info_file(folders, keys, meta_info_file, filename_tmp
 
 
 def paired_paths_from_folder(folders, keys, filename_tmpl):
-    """Generate paired paths from folders.
-
-    Args:
-        folders (list[str]): A list of folder path. The order of list should
-            be [input_folder, gt_folder].
-        keys (list[str]): A list of keys identifying folders. The order should
-            be in consistent with folders, e.g., ['lq', 'gt'].
-        filename_tmpl (str): Template for each filename. Note that the
-            template excludes the file extension. Usually the filename_tmpl is
-            for files in the input folder.
-
-    Returns:
-        list[str]: Returned path list.
-    """
-    assert len(folders) == 2, ('The len of folders should be 2 with [input_folder, gt_folder]. '
+    assert len(folders) == 2, ('The len of folders should be 2 with [input_folders, gt_folders]. '
                                f'But got {len(folders)}')
     assert len(keys) == 2, f'The len of keys should be 2 with [input_key, gt_key]. But got {len(keys)}'
-    input_folder, gt_folder = folders
+    
+    input_folders, gt_folders = folders  # input_folders和gt_folders都是列表
     input_key, gt_key = keys
 
-    input_paths = list(scandir(input_folder))
-    gt_paths = list(scandir(gt_folder))
-    assert len(input_paths) == len(gt_paths), (f'{input_key} and {gt_key} datasets have different number of images: '
-                                               f'{len(input_paths)}, {len(gt_paths)}.')
+    # 合并所有LQ文件夹的图片
+    input_paths = []
+    for input_folder in input_folders:
+        folder_paths = list(scandir(input_folder))
+        input_paths.extend(folder_paths)
+    
+    # 合并所有GT文件夹的图片  
+    gt_paths = []
+    for gt_folder in gt_folders:
+        folder_paths = list(scandir(gt_folder))
+        gt_paths.extend(folder_paths)
+    
+    # 创建LQ文件名到完整路径的映射
+    input_name_to_path = {}
+    for input_folder in input_folders:
+        for file_name in scandir(input_folder):
+            input_name_to_path[file_name] = osp.join(input_folder, file_name)
+    
+    # 创建GT文件名到完整路径的映射
+    gt_name_to_path = {}
+    for gt_folder in gt_folders:
+        for file_name in scandir(gt_folder):
+            gt_name_to_path[file_name] = osp.join(gt_folder, file_name)
+
     paths = []
-    for gt_path in gt_paths:
-        basename, ext = osp.splitext(osp.basename(gt_path))
+    for gt_file in gt_paths:
+        basename, ext = osp.splitext(osp.basename(gt_file))
         input_name = f'{filename_tmpl.format(basename)}{ext}'
-        input_path = osp.join(input_folder, input_name)
-        assert input_name in input_paths, f'{input_name} is not in {input_key}_paths.'
-        gt_path = osp.join(gt_folder, gt_path)
+        
+        if input_name not in input_name_to_path:
+            print(f"Warning: {input_name} is not found in any input folder, skipping...")
+            continue
+            
+        input_path = input_name_to_path[input_name]
+        gt_path = gt_name_to_path[gt_file]
+        
         paths.append(dict([(f'{input_key}_path', input_path), (f'{gt_key}_path', gt_path)]))
+    
     return paths
+
 
 
 def paths_from_folder(folder):

@@ -44,7 +44,14 @@ class PairedImageDataset(data.Dataset):
         self.mean = opt['mean'] if 'mean' in opt else None
         self.std = opt['std'] if 'std' in opt else None
 
-        self.gt_folder, self.lq_folder = opt['dataroot_gt'], opt['dataroot_lq']
+        # self.gt_folder, self.lq_folder = opt['dataroot_gt'], opt['dataroot_lq']
+
+
+        self.gt_folder = [v for k, v in opt.items() if (k.startswith('dataroot_gt')) and v is not None]
+
+        self.lq_folder = [v for k, v in opt.items() if (k.startswith('dataroot_lq')) and v is not None]
+
+
         if 'filename_tmpl' in opt:
             self.filename_tmpl = opt['filename_tmpl']
         else:
@@ -55,8 +62,7 @@ class PairedImageDataset(data.Dataset):
             self.io_backend_opt['client_keys'] = ['lq', 'gt']
             self.paths = paired_paths_from_lmdb([self.lq_folder, self.gt_folder], ['lq', 'gt'])
         elif 'meta_info_file' in self.opt and self.opt['meta_info_file'] is not None:
-            self.paths = paired_paths_from_meta_info_file([self.lq_folder, self.gt_folder], ['lq', 'gt'],
-                                                          self.opt['meta_info_file'], self.filename_tmpl)
+            self.paths = paired_paths_from_meta_info_file([self.lq_folder, self.gt_folder], ['lq', 'gt'],self.opt['meta_info_file'], self.filename_tmpl)
         else:
             # 要混合训练集的话，核心就修改下面这行代码，以及options.py中的dataroot_gt和dataroot_lq,改成列表形式（先添加一个是否混合数据集的参数）
             self.paths = paired_paths_from_folder([self.lq_folder, self.gt_folder], ['lq', 'gt'], self.filename_tmpl)
