@@ -195,6 +195,10 @@ def train_pipeline(root_path):
                     logger.warning('Multiple validation datasets are *only* supported by SRModel.')
                 for val_loader in val_loaders:
                     model.validation(val_loader, current_iter, tb_logger, opt['val']['save_img'])
+                    
+                # 调用最好指标的方式
+                # print(model.best_metric_results['Set5']['psnr']['val'])
+
 
             data_timer.start()
             iter_timer.start()
