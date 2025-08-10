@@ -12,8 +12,6 @@ scripts/__init__.py
 *.DS_Store
 .idea
 
-# ignored files
-version.py
 
 # ignored files with suffix
 *.html
