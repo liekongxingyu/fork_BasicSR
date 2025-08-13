@@ -25,7 +25,7 @@ datasets:
 
     # data loader
     num_worker_per_gpu: 1
-    batch_size_per_gpu: 100
+    batch_size_per_gpu: 640
     dataset_enlarge_ratio: 100
     prefetch_mode: ~
 
