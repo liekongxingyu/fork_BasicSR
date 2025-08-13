@@ -19,6 +19,8 @@ class LightweightDerainModel(BaseModel):
     def __init__(self, opt):
         super(LightweightDerainModel, self).__init__(opt)
 
+        self.save_vis = opt["val"]["save_vis"]  # 是否保存可视化结果
+        self.save_vis_freq = opt["val"].get("save_vis_freq", 10)  # 可视化结果保存频率
         # define network
         self.net_g = build_network(opt['network_g'])
         self.net_g = self.model_to_device(self.net_g)
@@ -289,12 +291,16 @@ class LightweightDerainModel(BaseModel):
             self._log_validation_metric_values(current_iter, dataset_name, tb_logger)
         
         # 🆕 新增：集成的可视化功能
-        if save_img and current_iter % 5000 == 0:  # 每5000次迭代可视化一次
+        if self.save_vis and current_iter % self.save_vis_freq == 0:  # 默认每10次迭代可视化一次
             vis_save_dir = osp.join(self.opt['path']['visualization'], f'frequency_analysis_{current_iter}')
             self._visualize_frequency_decomposition(visualization_data, vis_save_dir)
 
     def _visualize_frequency_decomposition(self, visualization_data, save_dir):
         """集成的频率分解可视化函数"""
+
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+        plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+
         os.makedirs(save_dir, exist_ok=True)
         logger = get_root_logger()
         logger.info(f'Generating frequency decomposition visualization in {save_dir}')
