@@ -13,7 +13,7 @@
       "env": {
         "PYTHONPATH": "${workspaceFolder}" // 设置你的包路径
       },
-      "args": ["-opt", "options/train/Derain/test01.yml"],
+      "args": ["-opt", "options/train/Example/example.yml"],
     }
   ]
 }
