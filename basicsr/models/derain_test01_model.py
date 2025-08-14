@@ -12,6 +12,7 @@ from basicsr.utils import get_root_logger, imwrite, tensor2img
 from basicsr.utils.registry import MODEL_REGISTRY
 from .base_model import BaseModel
 
+
 @MODEL_REGISTRY.register()
 class LightweightDerainModel(BaseModel):
     """轻量级去雨模型"""
@@ -31,7 +32,8 @@ class LightweightDerainModel(BaseModel):
         load_path = self.opt['path'].get('pretrain_network_g', None)
         if load_path is not None:
             param_key = self.opt['path'].get('param_key_g', 'params')
-            self.load_network(self.net_g, load_path, self.opt['path'].get('strict_load_g', True), param_key)
+            self.load_network(self.net_g, load_path, self.opt['path'].get(
+                'strict_load_g', True), param_key)
 
         if self.is_train:
             self.init_training_settings()
@@ -43,15 +45,18 @@ class LightweightDerainModel(BaseModel):
         self.ema_decay = train_opt.get('ema_decay', 0)
         if self.ema_decay > 0:
             logger = get_root_logger()
-            logger.info(f'Use Exponential Moving Average with decay: {self.ema_decay}')
+            logger.info(
+                f'Use Exponential Moving Average with decay: {self.ema_decay}')
             # define network net_g with Exponential Moving Average (EMA)
             # net_g_ema is used only for testing on one GPU and saving
             # There is no need to wrap with DistributedDataParallel
-            self.net_g_ema = build_network(self.opt['network_g']).to(self.device)
+            self.net_g_ema = build_network(
+                self.opt['network_g']).to(self.device)
             # load pretrained model
             load_path = self.opt['path'].get('pretrain_network_g', None)
             if load_path is not None:
-                self.load_network(self.net_g_ema, load_path, self.opt['path'].get('strict_load_g', True), 'params_ema')
+                self.load_network(self.net_g_ema, load_path, self.opt['path'].get(
+                    'strict_load_g', True), 'params_ema')
             else:
                 self.model_ema(0)  # copy net_g weight
             self.net_g_ema.eval()
@@ -63,7 +68,8 @@ class LightweightDerainModel(BaseModel):
             self.cri_pix = None
 
         if train_opt.get('perceptual_opt'):
-            self.cri_perceptual = build_loss(train_opt['perceptual_opt']).to(self.device)
+            self.cri_perceptual = build_loss(
+                train_opt['perceptual_opt']).to(self.device)
         else:
             self.cri_perceptual = None
 
@@ -85,7 +91,8 @@ class LightweightDerainModel(BaseModel):
                 logger.warning(f'Params {k} will not be optimized.')
 
         optim_type = train_opt['optim_g'].pop('type')
-        self.optimizer_g = self.get_optimizer(optim_type, optim_params, **train_opt['optim_g'])
+        self.optimizer_g = self.get_optimizer(
+            optim_type, optim_params, **train_opt['optim_g'])
         self.optimizers.append(self.optimizer_g)
 
     def feed_data(self, data):
@@ -114,7 +121,8 @@ class LightweightDerainModel(BaseModel):
             loss_dict['l_pix'] = l_pix
         # perceptual loss - 修复这里的bug
         if self.cri_perceptual:
-            l_percep, l_style = self.cri_perceptual(self.sr, self.gt)  # 改为self.sr
+            l_percep, l_style = self.cri_perceptual(
+                self.sr, self.gt)  # 改为self.sr
             if l_percep is not None:
                 l_total += l_percep
                 loss_dict['l_percep'] = l_percep
@@ -134,11 +142,11 @@ class LightweightDerainModel(BaseModel):
         """测试函数"""
         if hasattr(self, 'net_g_ema') and self.net_g_ema:
             self.net_g_ema.apply_shadow()
-        
+
         self.net_g.eval()
         with torch.no_grad():
             self.output = self.net_g(self.lq)
-            
+
             # 处理输出格式，保存详细信息
             if isinstance(self.output, dict):
                 self.sr = self.output['output']
@@ -147,7 +155,7 @@ class LightweightDerainModel(BaseModel):
             else:
                 self.sr = self.output
                 self.test_results = {'output': self.sr}
-        
+
         # 修复：恢复网络状态
         if hasattr(self, 'net_g_ema') and self.net_g_ema:
             self.net_g_ema.restore()
@@ -186,7 +194,8 @@ class LightweightDerainModel(BaseModel):
         else:
             self.net_g.eval()
             with torch.no_grad():
-                out_list = [self.net_g(aug) for aug in lq_list]  # 修复：改为self.net_g
+                out_list = [self.net_g(aug)
+                            for aug in lq_list]  # 修复：改为self.net_g
             self.net_g.train()
 
         # merge results
@@ -203,7 +212,8 @@ class LightweightDerainModel(BaseModel):
 
     def dist_validation(self, dataloader, current_iter, tb_logger, save_img):
         if self.opt['rank'] == 0:
-            self.nondist_validation(dataloader, current_iter, tb_logger, save_img)
+            self.nondist_validation(
+                dataloader, current_iter, tb_logger, save_img)
 
     # 分布式验证全流程 - 集成可视化功能
     def nondist_validation(self, dataloader, current_iter, tb_logger, save_img):
@@ -213,7 +223,8 @@ class LightweightDerainModel(BaseModel):
 
         if with_metrics:
             if not hasattr(self, 'metric_results'):  # only execute in the first run
-                self.metric_results = {metric: 0 for metric in self.opt['val']['metrics'].keys()}
+                self.metric_results = {
+                    metric: 0 for metric in self.opt['val']['metrics'].keys()}
             # initialize the best metric results for each dataset_name (supporting multiple validation datasets)
             self._initialize_best_metric_results(dataset_name)
         # zero self.metric_results
@@ -257,15 +268,16 @@ class LightweightDerainModel(BaseModel):
 
             if save_img:
                 if self.opt['is_train']:
-                    save_img_path = osp.join(self.opt['path']['visualization'], dataset_name,f'{img_name}_{current_iter}.png')
+                    save_img_path = osp.join(
+                        self.opt['path']['visualization'], dataset_name, f'{img_name}_{current_iter}.png')
                 else:
                     if self.opt['val']['suffix']:
                         save_img_path = osp.join(self.opt['path']['visualization'], dataset_name,
-                                                f'{img_name}_{self.opt["val"]["suffix"]}.png')
+                                                 f'{img_name}_{self.opt["val"]["suffix"]}.png')
                     else:
                         save_img_path = osp.join(self.opt['path']['visualization'], dataset_name,
-                                                f'{img_name}_{self.opt["name"]}.png')
-                
+                                                 f'{img_name}_{self.opt["name"]}.png')
+
                 print(f"保存路径: {save_img_path}")
                 # 确保目录存在
                 os.makedirs(osp.dirname(save_img_path), exist_ok=True)
@@ -275,7 +287,8 @@ class LightweightDerainModel(BaseModel):
             if with_metrics:
                 # calculate metrics
                 for name, opt_ in self.opt['val']['metrics'].items():
-                    self.metric_results[name] += calculate_metric(metric_data, opt_)
+                    self.metric_results[name] += calculate_metric(
+                        metric_data, opt_)
             if use_pbar:
                 pbar.update(1)
                 pbar.set_description(f'Test {img_name}')
@@ -286,88 +299,103 @@ class LightweightDerainModel(BaseModel):
             for metric in self.metric_results.keys():
                 self.metric_results[metric] /= (idx + 1)
                 # update the best metric result
-                self._update_best_metric_result(dataset_name, metric, self.metric_results[metric], current_iter)
+                self._update_best_metric_result(
+                    dataset_name, metric, self.metric_results[metric], current_iter)
 
-            self._log_validation_metric_values(current_iter, dataset_name, tb_logger)
-        
+            self._log_validation_metric_values(
+                current_iter, dataset_name, tb_logger)
+
+        # 只有验证时才会执行可视化
+        self.stage_visualization(
+            visualization_data, current_iter)
+
+    def stage_visualization(self, visualization_data, current_iter):
         # 🆕 新增：集成的可视化功能
         if self.save_vis and current_iter % self.save_vis_freq == 0:  # 默认每10次迭代可视化一次
-            vis_save_dir = osp.join(self.opt['path']['visualization'], f'frequency_analysis_{current_iter}')
-            self._visualize_frequency_decomposition(visualization_data, vis_save_dir)
+            vis_save_dir = osp.join(
+                self.opt['path']['visualization'], f'frequency_analysis_{current_iter}')
+            self._visualize_frequency_decomposition(
+                visualization_data, vis_save_dir)
 
     def _visualize_frequency_decomposition(self, visualization_data, save_dir):
         """集成的频率分解可视化函数"""
 
-        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+        plt.rcParams['font.sans-serif'] = ['SimHei',
+                                           'Microsoft YaHei', 'Arial Unicode MS']
         plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
         os.makedirs(save_dir, exist_ok=True)
         logger = get_root_logger()
-        logger.info(f'Generating frequency decomposition visualization in {save_dir}')
-        
+        logger.info(
+            f'Generating frequency decomposition visualization in {save_dir}')
+
         for idx, vis_data in enumerate(visualization_data):
             img_name = vis_data['img_name']
             visuals = vis_data['visuals']
-            
+
             try:
                 # 转换为numpy格式
                 lq_img = tensor2img(visuals['lq'])
                 result_img = tensor2img(visuals['result'])
-                
+
                 gt_img = None
                 if 'gt' in visuals:
                     gt_img = tensor2img(visuals['gt'])
-                
+
                 # 如果有频率分解结果
                 if 'low_freq_energy' in visuals and 'high_freq_energy' in visuals:
                     low_energy_img = tensor2img(visuals['low_freq_energy'])
                     high_energy_img = tensor2img(visuals['high_freq_energy'])
-                    
+
                     # 创建完整的对比图
                     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-                    
-                    axes[0,0].imshow(lq_img)
-                    axes[0,0].set_title('含雨图像')
-                    axes[0,0].axis('off')
-                    
-                    axes[0,1].imshow(result_img)
-                    axes[0,1].set_title('去雨结果')
-                    axes[0,1].axis('off')
-                    
+
+                    axes[0, 0].imshow(lq_img)
+                    axes[0, 0].set_title('含雨图像')
+                    axes[0, 0].axis('off')
+
+                    axes[0, 1].imshow(result_img)
+                    axes[0, 1].set_title('去雨结果')
+                    axes[0, 1].axis('off')
+
                     if gt_img is not None:
-                        axes[0,2].imshow(gt_img)
-                        axes[0,2].set_title('真实清晰图')
-                        axes[0,2].axis('off')
+                        axes[0, 2].imshow(gt_img)
+                        axes[0, 2].set_title('真实清晰图')
+                        axes[0, 2].axis('off')
                     else:
-                        axes[0,2].axis('off')
-                    
-                    axes[1,0].imshow(low_energy_img, cmap='hot')
-                    axes[1,0].set_title('低频能量图\n(背景结构)')
-                    axes[1,0].axis('off')
-                    
-                    axes[1,1].imshow(high_energy_img, cmap='hot')
-                    axes[1,1].set_title('高频能量图\n(细节/雨纹)')
-                    axes[1,1].axis('off')
-                    
+                        axes[0, 2].axis('off')
+
+                    axes[1, 0].imshow(low_energy_img, cmap='hot')
+                    axes[1, 0].set_title('低频能量图\n(背景结构)')
+                    axes[1, 0].axis('off')
+
+                    axes[1, 1].imshow(high_energy_img, cmap='hot')
+                    axes[1, 1].set_title('高频能量图\n(细节/雨纹)')
+                    axes[1, 1].axis('off')
+
                     # 显示学到的滤波器权重
                     if hasattr(self.net_g, 'lowpass_filter'):
-                        filter_weight = self.net_g.lowpass_filter.weight[0,0].detach().cpu().numpy()
-                        axes[1,2].imshow(filter_weight, cmap='RdBu')
-                        axes[1,2].set_title('学到的低通滤波器')
-                        axes[1,2].axis('off')
+                        filter_weight = self.net_g.lowpass_filter.weight[0, 0].detach(
+                        ).cpu().numpy()
+                        axes[1, 2].imshow(filter_weight, cmap='RdBu')
+                        axes[1, 2].set_title('学到的低通滤波器')
+                        axes[1, 2].axis('off')
                     else:
-                        axes[1,2].axis('off')
-                    
+                        axes[1, 2].axis('off')
+
                     plt.tight_layout()
-                    plt.savefig(f"{save_dir}/{img_name}_frequency_analysis.png", dpi=150, bbox_inches='tight')
+                    plt.savefig(
+                        f"{save_dir}/{img_name}_frequency_analysis.png", dpi=150, bbox_inches='tight')
                     plt.close()
-                    
+
                     logger.info(f'Saved frequency analysis for {img_name}')
                 else:
-                    logger.warning(f'No frequency data available for {img_name}')
-                    
+                    logger.warning(
+                        f'No frequency data available for {img_name}')
+
             except Exception as e:
-                logger.error(f'Error creating visualization for {img_name}: {str(e)}')
+                logger.error(
+                    f'Error creating visualization for {img_name}: {str(e)}')
                 continue
 
     def _log_validation_metric_values(self, current_iter, dataset_name, tb_logger):
@@ -383,7 +411,8 @@ class LightweightDerainModel(BaseModel):
         logger.info(log_str)
         if tb_logger:
             for metric, value in self.metric_results.items():
-                tb_logger.add_scalar(f'metrics/{dataset_name}/{metric}', value, current_iter)
+                tb_logger.add_scalar(
+                    f'metrics/{dataset_name}/{metric}', value, current_iter)
 
     def get_current_visuals(self):
         """获取当前的可视化结果"""
@@ -392,31 +421,34 @@ class LightweightDerainModel(BaseModel):
         out_dict['result'] = self.sr.detach().cpu()
         if hasattr(self, 'gt'):
             out_dict['gt'] = self.gt.detach().cpu()
-        
+
         # 频率分解结果的可视化处理
         if hasattr(self, 'test_results') and isinstance(self.test_results, dict):
             if 'low_freq_feat' in self.test_results and self.test_results['low_freq_feat'] is not None:
                 # 将特征图转换为可视化格式
                 low_feat = self.test_results['low_freq_feat'].detach().cpu()
                 high_feat = self.test_results['high_freq_feat'].detach().cpu()
-                
+
                 # 计算能量图并归一化
                 low_energy = low_feat.pow(2).mean(1, keepdim=True)  # [B,1,H,W]
                 high_energy = high_feat.pow(2).mean(1, keepdim=True)
-                
+
                 # 归一化到[0,1]
-                low_energy = (low_energy - low_energy.min()) / (low_energy.max() - low_energy.min() + 1e-8)
-                high_energy = (high_energy - high_energy.min()) / (high_energy.max() - high_energy.min() + 1e-8)
-                
+                low_energy = (low_energy - low_energy.min()) / \
+                    (low_energy.max() - low_energy.min() + 1e-8)
+                high_energy = (high_energy - high_energy.min()) / \
+                    (high_energy.max() - high_energy.min() + 1e-8)
+
                 # 扩展到3通道用于保存（BasicSR框架要求）
                 out_dict['low_freq_energy'] = low_energy.repeat(1, 3, 1, 1)
                 out_dict['high_freq_energy'] = high_energy.repeat(1, 3, 1, 1)
-        
+
         return out_dict
 
     def save(self, epoch, current_iter):
         if hasattr(self, 'net_g_ema'):
-            self.save_network([self.net_g, self.net_g_ema], 'net_g', current_iter, param_key=['params', 'params_ema'])
+            self.save_network([self.net_g, self.net_g_ema], 'net_g',
+                              current_iter, param_key=['params', 'params_ema'])
         else:
             self.save_network(self.net_g, 'net_g', current_iter)
         self.save_training_state(epoch, current_iter)

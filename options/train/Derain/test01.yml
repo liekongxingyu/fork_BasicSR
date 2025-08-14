@@ -25,7 +25,7 @@ datasets:
 
     # data loader
     num_worker_per_gpu: 1
-    batch_size_per_gpu: 640
+    batch_size_per_gpu: 6
     dataset_enlarge_ratio: 100
     prefetch_mode: ~
 
@@ -78,7 +78,7 @@ val:
   val_freq: 20
   save_img: false
   save_vis: true  # 🆕 新增：是否保存频域分解的可视化结果
-  save_vis_freq: 20  # 🆕 新增：频域分解可视化结果保存频率
+  save_vis_freq: 2  # 🆕 新增：频域分解可视化结果保存频率
 
   metrics:
     psnr: # metric name, can be arbitrary
