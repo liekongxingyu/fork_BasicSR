@@ -19,6 +19,9 @@ class SRModel(BaseModel):
     def __init__(self, opt):
         super(SRModel, self).__init__(opt)
 
+        self.save_vis = opt["val"]["save_vis"]  # 是否保存可视化结果
+        self.save_vis_freq = opt["val"].get("save_vis_freq", 10)  # 可视化结果保存频率
+
         # define network
         self.net_g = build_network(opt['network_g'])
         self.net_g = self.model_to_device(self.net_g)
@@ -94,6 +97,14 @@ class SRModel(BaseModel):
     def optimize_parameters(self, current_iter):
         self.optimizer_g.zero_grad()
         self.output = self.net_g(self.lq)
+
+        if isinstance(self.output, dict):
+            self.sr = self.output['output']
+            # 保存中间结果用于可视化（需要修改下面的字段）
+            self.low_freq_feat = self.output.get('low_freq_feat', None)
+            self.high_freq_feat = self.output.get('high_freq_feat', None)
+        else:
+            self.sr = self.output
 
         l_total = 0
         loss_dict = OrderedDict()
@@ -204,6 +215,10 @@ class SRModel(BaseModel):
         if use_pbar:
             pbar = tqdm(total=len(dataloader), unit='image')
 
+        # 存储可视化数据
+        visualization_data = []
+        max_vis_samples = 5  # 最多可视化5张图
+
         for idx, val_data in enumerate(dataloader):
             img_name = osp.splitext(osp.basename(val_data['lq_path'][0]))[0]
             self.feed_data(val_data)
@@ -211,11 +226,21 @@ class SRModel(BaseModel):
 
             visuals = self.get_current_visuals()
             sr_img = tensor2img([visuals['result']])
+            
+
             metric_data['img'] = sr_img
             if 'gt' in visuals:
                 gt_img = tensor2img([visuals['gt']])
                 metric_data['img2'] = gt_img
                 del self.gt
+
+
+            if len(visualization_data) < max_vis_samples:
+                vis_data = {
+                    'img_name': img_name,
+                    'visuals': visuals.copy()  # 深拷贝避免后续删除影响
+                }
+                visualization_data.append(vis_data)
 
             # tentative for out of GPU memory
             del self.lq
@@ -264,7 +289,11 @@ class SRModel(BaseModel):
 
             self._log_validation_metric_values(current_iter, dataset_name, tb_logger)
         
-        
+        # 只有验证时才会执行可视化
+        self.stage_visualization(visualization_data, current_iter)
+
+    def stage_visualization(self, visualization_data, current_iter):
+        pass
 
     def _log_validation_metric_values(self, current_iter, dataset_name, tb_logger):
         log_str = f'Validation {dataset_name}\n'
