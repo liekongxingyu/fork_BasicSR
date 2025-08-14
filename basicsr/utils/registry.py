@@ -39,9 +39,14 @@ class Registry():
         if isinstance(suffix, str):
             name = name + '_' + suffix
 
-        assert (name not in self._obj_map), (f"An object named '{name}' was already registered "
-                                             f"in '{self._name}' registry!")
+        # 修改逻辑：如果已注册就跳过，不报错
+        if name in self._obj_map:
+            print(f"[Warning] An object named '{name}' was already registered "
+                f"in '{self._name}' registry! Skipping registration.")
+            return
+    
         self._obj_map[name] = obj
+
 
     def register(self, obj=None, suffix=None):
         """

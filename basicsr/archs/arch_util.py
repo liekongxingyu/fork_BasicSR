@@ -295,6 +295,10 @@ def trunc_normal_(tensor, mean=0., std=1., a=-2., b=2.):
     return _no_grad_trunc_normal_(tensor, mean, std, a, b)
 
 
+
+
+
+
 # From PyTorch
 def _ntuple(n):
 
@@ -304,6 +308,8 @@ def _ntuple(n):
         return tuple(repeat(x, n))
 
     return parse
+
+
 
 
 to_1tuple = _ntuple(1)
