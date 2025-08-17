@@ -36,7 +36,10 @@ class NAFNetModel(BaseModel):
         self.max_val_num = opt['val'].get('max_val_num', None)  # 最大验证图像数量
     
         self.save_vis = opt["val"]["save_vis"]  # 是否保存可视化结果
-        self.save_vis_freq = opt["val"].get("save_vis_freq", 10)  # 可视化结果保存频率
+        self.save_vis_freq = opt["val"].get("save_vis_freq")  # 可视化结果保存频率
+        if self.save_vis_freq is None:
+            self.save_vis_freq = int(opt['val']['val_freq'])
+        print(self.save_vis_freq)
 
         # define network
         self.net_g = build_network(deepcopy(opt['network_g']))
@@ -200,22 +203,25 @@ class NAFNetModel(BaseModel):
             self.mixup_aug()
 
         preds = self.net_g(self.lq)
-        
-        # 🔧 修复：统一处理网络输出格式
+
+        # 🔧 统一处理网络输出格式
         if isinstance(preds, dict):
             # 字典输出：取主要输出用于损失计算
-            self.output = preds['output'] 
+            self.output = preds['output']
             self.sr = preds['output']
-            # 保存中间结果用于可视化
-            self.feature1 = preds.get('feature1', None)
-            self.feature2 = preds.get('feature2', None)
+            # 保存中间结果用于可视化，动态处理特征
+            for key, value in preds.items():
+                if key != 'output':
+                    setattr(self, key, value)
             # 用于损失计算的输出列表
             preds_for_loss = [preds['output']]
+
         elif isinstance(preds, list):
             # 列表输出：保持原有逻辑
             self.output = preds[-1]
-            self.sr = preds[-1] 
+            self.sr = preds[-1]
             preds_for_loss = preds
+
         else:
             # 单tensor输出
             self.output = preds
@@ -268,22 +274,28 @@ class NAFNetModel(BaseModel):
                 if j >= n:
                     j = n
                 pred = self.net_g(self.lq[i:j])
+                
                 if isinstance(pred, dict):
                     # 处理字典输出
                     outs.append(pred['output'].detach().cpu())
-                    # 保存特征（只保存第一个batch的特征用于可视化）
+                    # 动态保存所有中间特征（只保存第一个batch用于可视化）
                     if i == 0:
-                        self.feature1 = pred.get('feature1', None)
-                        self.feature2 = pred.get('feature2', None)
+                        for key, value in pred.items():
+                            if key != 'output':
+                                setattr(self, key, value)
+                                
                 elif isinstance(pred, list):
+                    # 处理列表输出
                     pred = pred[-1]
                     outs.append(pred.detach().cpu())
                 else:
+                    # 处理单tensor输出
                     outs.append(pred.detach().cpu())
                 i = j
 
             self.output = torch.cat(outs, dim=0)
         self.net_g.train()
+
 
 
     def nondist_validation(self, dataloader, current_iter, tb_logger, save_img, rgb2bgr=True, use_image=True):
@@ -412,11 +424,16 @@ class NAFNetModel(BaseModel):
             self._visualize_frequency_decomposition(
                 visualization_data, vis_save_dir)
             
-    def _visualize_frequency_decomposition(self, visualization_data, save_dir):
-        """集成的特征可视化函数"""
+    def _visualize_frequency_decomposition(self, visualization_data, save_dir, 
+                                        feature_prefix='feature', 
+                                        energy_suffix='_energy',
+                                        feature_titles=None,
+                                        colormap='hot',
+                                        max_features_per_row=3):
+        """集成的特征可视化函数 - 支持更多特征的3行布局"""
         
         plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
-        plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+        plt.rcParams['axes.unicode_minus'] = False
         
         os.makedirs(save_dir, exist_ok=True)
         logger = get_root_logger()
@@ -427,7 +444,7 @@ class NAFNetModel(BaseModel):
             visuals = vis_data['visuals']
             
             try:
-                # 转换为numpy格式
+                # 转换基础图像为numpy格式
                 lq_img = tensor2img(visuals['lq'])
                 result_img = tensor2img(visuals['result'])
                 
@@ -435,85 +452,112 @@ class NAFNetModel(BaseModel):
                 if 'gt' in visuals:
                     gt_img = tensor2img(visuals['gt'])
                 
-                # 检查是否有两个特征的能量数据
-                if 'feature1_energy' in visuals and 'feature2_energy' in visuals:
-                    feature1_energy = tensor2img(visuals['feature1_energy'])
-                    feature2_energy = tensor2img(visuals['feature2_energy'])
-                    
-                    # 检查是否有特征差异图
-                    feature_diff = None
-                    if 'feature_diff_energy' in visuals:
-                        feature_diff = tensor2img(visuals['feature_diff_energy'])
-                    
-                    # 创建特征对比图布局 (2x3 或 2x2)
-                    if feature_diff is not None:
-                        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-                        has_diff = True
-                    else:
-                        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-                        has_diff = False
-                    
-                    # 第一行：输入输出对比
-                    axes[0, 0].imshow(lq_img)
-                    axes[0, 0].set_title('输入图像', fontsize=14, weight='bold')
-                    axes[0, 0].axis('off')
-                    
-                    axes[0, 1].imshow(result_img)
-                    axes[0, 1].set_title('输出结果', fontsize=14, weight='bold')
-                    axes[0, 1].axis('off')
-                    
-                    if has_diff and gt_img is not None:
-                        axes[0, 2].imshow(gt_img)
-                        axes[0, 2].set_title('真实标签', fontsize=14, weight='bold')
-                        axes[0, 2].axis('off')
-                    elif has_diff:
-                        axes[0, 2].axis('off')
-                    
-                    # 第二行：特征能量对比
-                    im1 = axes[1, 0].imshow(feature1_energy, cmap='hot', interpolation='bilinear')
-                    axes[1, 0].set_title('Middle Blocks 前\n特征能量分布', fontsize=14, weight='bold')
-                    axes[1, 0].axis('off')
-                    plt.colorbar(im1, ax=axes[1, 0], shrink=0.6, label='能量强度')
-                    
-                    im2 = axes[1, 1].imshow(feature2_energy, cmap='hot', interpolation='bilinear')
-                    axes[1, 1].set_title('Middle Blocks 后\n特征能量分布', fontsize=14, weight='bold')
-                    axes[1, 1].axis('off')
-                    plt.colorbar(im2, ax=axes[1, 1], shrink=0.6, label='能量强度')
-                    
-                    if has_diff:
-                        im3 = axes[1, 2].imshow(feature_diff, cmap='RdBu_r', interpolation='bilinear')
-                        axes[1, 2].set_title('特征变化差异图\n(红色=增强, 蓝色=减弱)', fontsize=14, weight='bold')
-                        axes[1, 2].axis('off')
-                        plt.colorbar(im3, ax=axes[1, 2], shrink=0.6, label='差异强度')
-                    
-                    # 添加整体标题和统计信息
-                    plt.suptitle(f'Middle Blocks 特征分析 - {img_name}', fontsize=16, y=0.95, weight='bold')
-                    
-                    # 在底部添加简单的统计信息
-                    feat1_stats = f"前: 均值={np.mean(feature1_energy):.3f}, 最大={np.max(feature1_energy):.3f}"
-                    feat2_stats = f"后: 均值={np.mean(feature2_energy):.3f}, 最大={np.max(feature2_energy):.3f}"
-                    plt.figtext(0.5, 0.02, f"{feat1_stats} | {feat2_stats}", 
-                            ha='center', fontsize=10, 
-                            bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8))
-                    
-                    plt.tight_layout()
-                    plt.subplots_adjust(top=0.90, bottom=0.08)
-                    
-                    save_path = f"{save_dir}/{img_name}_feature_analysis.png"
-                    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-                    plt.close()
-                    
-                    logger.info(f'Saved feature analysis for {img_name}')
+                # 动态检测有多少个特征
+                features = []
+                feature_energies = []
+                i = 1
+                while f'{feature_prefix}{i}{energy_suffix}' in visuals:
+                    features.append(f'{feature_prefix}{i}')
+                    feature_energies.append(tensor2img(visuals[f'{feature_prefix}{i}{energy_suffix}']))
+                    i += 1
                 
-                else:
+                if not features:
                     logger.warning(f'No feature energy data available for {img_name}')
+                    continue
+                
+                # 计算布局：3行，列数由基础图像数量和每行最大特征数决定
+                num_features = len(features)
+                num_base_imgs = 2 + (1 if gt_img is not None else 0)  # lq + result + (gt)
+                num_cols = max(num_base_imgs, max_features_per_row)
+                
+                fig, axes = plt.subplots(3, num_cols, figsize=(6*num_cols, 18))
+                if num_cols == 1:
+                    axes = axes.reshape(3, 1)
+                
+                # 第一行：基础图像
+                axes[0, 0].imshow(lq_img)
+                axes[0, 0].set_title('输入图像', fontsize=14, weight='bold')
+                axes[0, 0].axis('off')
+                
+                axes[0, 1].imshow(result_img)
+                axes[0, 1].set_title('输出结果', fontsize=14, weight='bold')
+                axes[0, 1].axis('off')
+                
+                if gt_img is not None:
+                    axes[0, 2].imshow(gt_img)
+                    axes[0, 2].set_title('真实标签', fontsize=14, weight='bold')
+                    axes[0, 2].axis('off')
+                    start_col = 3
+                else:
+                    start_col = 2
+                
+                # 隐藏第一行多余的子图
+                for col in range(start_col, num_cols):
+                    axes[0, col].axis('off')
+                
+                # 第二行和第三行：特征能量图
+                feature_positions = []
+                # 第二行位置
+                for col in range(max_features_per_row):
+                    feature_positions.append((1, col))
+                # 第三行位置  
+                for col in range(max_features_per_row):
+                    feature_positions.append((2, col))
+                
+                # 绘制特征能量图
+                for i, (feature_name, feature_energy) in enumerate(zip(features, feature_energies)):
+                    if i >= len(feature_positions):
+                        logger.warning(f'Too many features ({num_features}), max supported: {len(feature_positions)}')
+                        break
+                        
+                    row, col = feature_positions[i]
                     
+                    # 使用自定义标题或默认标题
+                    if feature_titles and i < len(feature_titles):
+                        title = feature_titles[i]
+                    else:
+                        title = f'{feature_name}\n特征能量分布'
+                    
+                    im = axes[row, col].imshow(feature_energy, cmap=colormap, interpolation='bilinear')
+                    axes[row, col].set_title(title, fontsize=14, weight='bold')
+                    axes[row, col].axis('off')
+                    plt.colorbar(im, ax=axes[row, col], shrink=0.6, label='能量强度')
+                
+                # 隐藏未使用的特征位置
+                for i in range(len(features), len(feature_positions)):
+                    row, col = feature_positions[i]
+                    axes[row, col].axis('off')
+                
+                # 添加整体标题和统计信息
+                plt.suptitle(f'特征分析 - {img_name}', fontsize=16, y=0.96, weight='bold')
+                
+                # 生成统计信息
+                stats_parts = []
+                for i, (feature_name, feature_energy) in enumerate(zip(features, feature_energies)):
+                    stats = f"{feature_name}: 均值={np.mean(feature_energy):.3f}, 最大={np.max(feature_energy):.3f}"
+                    stats_parts.append(stats)
+                
+                stats_text = " | ".join(stats_parts)
+                plt.figtext(0.5, 0.02, stats_text, 
+                        ha='center', fontsize=10, 
+                        bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8))
+                
+                plt.tight_layout()
+                plt.subplots_adjust(top=0.92, bottom=0.06)
+                
+                save_path = f"{save_dir}/{img_name}_feature_analysis.png"
+                plt.savefig(save_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                
+                logger.info(f'Saved feature analysis for {img_name} with {num_features} features')
+                
             except Exception as e:
                 logger.error(f'Error creating visualization for {img_name}: {str(e)}')
                 continue
 
 
-    def get_current_visuals(self):
+
+    def get_current_visuals(self, feature_prefix='feature', energy_suffix='_energy', feature_count=None):
         """获取当前的可视化结果"""
         
         out_dict = OrderedDict()
@@ -524,29 +568,61 @@ class NAFNetModel(BaseModel):
         if hasattr(self, 'gt'):
             out_dict['gt'] = self.gt.detach().cpu()
         
-        # 处理两个特征的能量可视化
-        if hasattr(self, 'feature1') and hasattr(self, 'feature2'):
-            if self.feature1 is not None:
-                # 计算feature1的能量图
-                feat1_energy = self.feature1.pow(2).mean(1, keepdim=True).detach().cpu()
-                # 归一化
-                feat1_energy = (feat1_energy - feat1_energy.min()) / (feat1_energy.max() - feat1_energy.min() + 1e-8)
-                # 扩展为3通道
-                out_dict['feature1_energy'] = feat1_energy.repeat(1, 3, 1, 1)
+        # 如果未指定特征数量，则自动检测
+        if feature_count is None:
+            feature_count = 0
+            while True:
+                if not hasattr(self, f'{feature_prefix}{feature_count + 1}'):
+                    break
+                feature_count += 1
+
+        # 动态处理所有feature特征
+        for i in range(1, feature_count + 1):
+            feat_name = f'{feature_prefix}{i}'
             
-            if self.feature2 is not None:
-                feat2_energy = self.feature2.pow(2).mean(1, keepdim=True).detach().cpu()
-                feat2_energy = (feat2_energy - feat2_energy.min()) / (feat2_energy.max() - feat2_energy.min() + 1e-8)
-                out_dict['feature2_energy'] = feat2_energy.repeat(1, 3, 1, 1)
+            # 检查是否存在该特征
+            feat = getattr(self, feat_name, None)
+            if feat is None:
+                continue
+                
+            # 获取特征并移到CPU
+            feat_cpu = feat.detach().cpu()
             
-            # 特征差异能量图
-            if self.feature1 is not None and self.feature2 is not None:
-                feat_diff = (self.feature2 - self.feature1).detach().cpu()
-                diff_energy = feat_diff.pow(2).mean(1, keepdim=True)
-                diff_energy = (diff_energy - diff_energy.min()) / (diff_energy.max() - diff_energy.min() + 1e-8)
-                out_dict['feature_diff_energy'] = diff_energy.repeat(1, 3, 1, 1)
+            # 处理通道维度不匹配
+            # if feat1.shape[1] != feat2.shape[1]:
+            #     # 取较小的通道数
+            #     min_channels = min(feat1.shape[1], feat2.shape[1])
+            #     feat1 = feat1[:, :min_channels]
+            #     feat2 = feat2[:, :min_channels]
+                
+            # 处理空间尺寸不匹配
+            # if feat1.shape[-2:] != feat2.shape[-2:]:
+            #     # 将feat1 resize到feat2的尺寸
+            #     feat1 = F.interpolate(feat1, size=feat2.shape[-2:], mode='bilinear', align_corners=False)
+            
+            # 计算能量图
+            feat_energy = feat_cpu.pow(2).mean(1, keepdim=True)
+            # 归一化处理
+            feat_energy = (feat_energy - feat_energy.min()) / (feat_energy.max() - feat_energy.min() + 1e-8)
+            
+            # 根据特征序号决定输出格式
+            if i == 1:
+                # feature1保持3通道（兼容原有逻辑）
+                out_dict[f'{feature_prefix}{i}{energy_suffix}'] = feat_energy.repeat(1, 3, 1, 1)
+            else:
+                # 其他特征保持单通道，不需要repeat
+                out_dict[f'{feature_prefix}{i}{energy_suffix}'] = feat_energy
+                
+            # 计算特征差异能量图
+            # feat_diff = (feat2 - feat1)  # 所有维度都匹配了
+            # diff_energy = feat_diff.pow(2).mean(1, keepdim=True)
+            # diff_energy = (diff_energy - diff_energy.min()) / (diff_energy.max() - diff_energy.min() + 1e-8)
+            # out_dict['feature_diff_energy'] = diff_energy.repeat(1, 3, 1, 1)
         
         return out_dict
+
+
+
 
 
     def dist_validation(self, dataloader, current_iter, tb_logger, save_img):

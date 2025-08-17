@@ -1,5 +1,5 @@
 
-name: Baseline-GoPro-width16
+name: NAF-Snow100K-width16-01
 model_type: NAFNetModel
 scale: 1
 num_gpu: 1
@@ -7,10 +7,10 @@ manual_seed: 42
 
 datasets:
   train:
-    name: Rain100L
+    name: Snow100K
     type: PairedImageDataset
-    dataroot_gt1: ../Dataset/Rain100L/Train/Gt
-    dataroot_lq1: ../Dataset/Rain100L/Train/Rain
+    dataroot_gt1: ../Dataset/Snow100K/Train/Gt
+    dataroot_lq1: ../Dataset/Snow100K/Train/Snow
 
     filename_tmpl: '{}'
     io_backend:
@@ -25,15 +25,15 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 1
-    batch_size_per_gpu: 6
+    batch_size_per_gpu: 60
     dataset_enlarge_ratio: 100
     prefetch_mode: ~
 
   val:
-    name: Rain100L
+    name: Snow100K-M
     type: PairedImageDataset
-    dataroot_gt: ../Dataset/Rain100L/Test/Gt
-    dataroot_lq: ../Dataset/Rain100L/Test/Rain
+    dataroot_gt: ../Dataset/Snow100K/Test/Snow100K-M/Gt
+    dataroot_lq: ../Dataset/Snow100K/Test/Snow100K-M/Snow
     io_backend:
       type: disk
 
@@ -77,11 +77,11 @@ train:
 
 # validation settings
 val:
-  val_freq: !!float 30
+  val_freq: !!float 800
   save_img: false
   save_vis: true  # 🆕 新增：是否保存频域分解的可视化结果
-  save_vis_freq: 30  # 🆕 新增：频域分解可视化结果保存频率
-  max_val_num: 20  # 🆕 新增：最大验证图像数量
+  save_vis_freq: ~  # 🆕 新增：频域分解可视化结果保存频率
+  max_val_num: 40  # 🆕 新增：最大验证图像数量
 
 
   metrics:

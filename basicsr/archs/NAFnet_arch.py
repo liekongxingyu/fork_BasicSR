@@ -247,21 +247,37 @@ class NAF_Baseline(nn.Module):
 
         encs = []
 
+        flag_enc = 1
         for encoder, down in zip(self.encoders, self.downs):
             x = encoder(x)
             encs.append(x)
             x = down(x)
 
-        feature1 = x
+            if flag_enc == 1:
+                feature1 = x
+            if flag_enc == 3:
+                feature2 = x
+
+            flag_enc += 1
+            
+            
 
         x = self.middle_blks(x)
 
-        feature2 = x
+        feature3 = x
 
+        flag_dec = 1
         for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
             x = up(x)
             x = x + enc_skip
             x = decoder(x)
+
+            if flag_dec == 2:
+                feature4 = x
+            if flag_dec == 4:
+                feature5 = x
+
+            flag_dec += 1
 
         x = self.ending(x)
         x = x + inp
@@ -270,8 +286,11 @@ class NAF_Baseline(nn.Module):
 
         return {
             'output': x,
-            'feature1': feature1,
-            'feature2': feature2
+            'feature1': feature1,  # 编码器1后
+            'feature2': feature2,  # 编码器3后
+            'feature3': feature3,  # 中间块后
+            'feature4': feature4,  # 解码器2后
+            'feature5': feature5   # 解码器4后
         }
 
     def check_image_size(self, x):
