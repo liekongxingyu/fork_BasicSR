@@ -323,7 +323,7 @@ class NAFNetModel(BaseModel):
 
         # 存储可视化数据
         visualization_data = []
-        max_vis_samples = 5
+        max_vis_samples = 10
 
         # 🔧 非分布式：遍历所有数据，不需要分布式任务分配
         for idx, val_data in enumerate(dataloader):
@@ -361,26 +361,27 @@ class NAFNetModel(BaseModel):
             torch.cuda.empty_cache()
 
             if save_img:
-                if sr_img.shape[2] == 6:
-                    L_img = sr_img[:, :, :3]
-                    R_img = sr_img[:, :, 3:]
-                    visual_dir = osp.join(self.opt['path']['visualization'], dataset_name)
-                    imwrite(L_img, osp.join(visual_dir, f'{img_name}_L.png'))
-                    imwrite(R_img, osp.join(visual_dir, f'{img_name}_R.png'))
+                if self.opt['is_train']:
+                    save_img_path = osp.join(self.opt['path']['visualization'], dataset_name,f'{img_name}_{current_iter}.png')
                 else:
-                    if self.opt['is_train']:
-                        save_img_path = osp.join(self.opt['path']['visualization'],
-                                            img_name, f'{img_name}_{current_iter}.png')
-                        save_gt_img_path = osp.join(self.opt['path']['visualization'],
-                                                img_name, f'{img_name}_{current_iter}_gt.png')
+                    if self.opt['val']['suffix']:
+                        save_img_path = osp.join(self.opt['path']['visualization'], dataset_name,
+                                                f'{img_name}_{self.opt["val"]["suffix"]}.png')
                     else:
-                        save_img_path = osp.join(
-                            self.opt['path']['visualization'], dataset_name, f'{img_name}.png')
-                        save_gt_img_path = osp.join(
-                            self.opt['path']['visualization'], dataset_name, f'{img_name}_gt.png')
-
-                    imwrite(sr_img, save_img_path)
-                    imwrite(gt_img, save_gt_img_path)
+                        save_img_path = osp.join(self.opt['path']['visualization'], dataset_name,
+                                                f'{img_name}_{self.opt["name"]}.png')
+                
+                # 调试信息
+                # print(f"图像数据: {sr_img.shape if sr_img is not None else 'None'}")
+                # print(f"保存路径: {save_img_path}")
+                # print(f"目录存在: {osp.exists(osp.dirname(save_img_path))}")
+                
+                # 确保目录存在
+                os.makedirs(osp.dirname(save_img_path), exist_ok=True)
+                
+                # 保存并检查结果
+                success = imwrite(sr_img, save_img_path)
+                # print(f"保存{'成功' if success else '失败'}")
 
             if with_metrics:
                 # calculate metrics
@@ -432,7 +433,6 @@ class NAFNetModel(BaseModel):
                                         max_features_per_row=3):
         """集成的特征可视化函数 - 支持更多特征的3行布局"""
         
-        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
         plt.rcParams['axes.unicode_minus'] = False
         
         os.makedirs(save_dir, exist_ok=True)
@@ -476,16 +476,16 @@ class NAFNetModel(BaseModel):
                 
                 # 第一行：基础图像
                 axes[0, 0].imshow(lq_img)
-                axes[0, 0].set_title('输入图像', fontsize=14, weight='bold')
+                axes[0, 0].set_title('input', fontsize=14, weight='bold')
                 axes[0, 0].axis('off')
                 
                 axes[0, 1].imshow(result_img)
-                axes[0, 1].set_title('输出结果', fontsize=14, weight='bold')
+                axes[0, 1].set_title('output', fontsize=14, weight='bold')
                 axes[0, 1].axis('off')
                 
                 if gt_img is not None:
                     axes[0, 2].imshow(gt_img)
-                    axes[0, 2].set_title('真实标签', fontsize=14, weight='bold')
+                    axes[0, 2].set_title('real_label', fontsize=14, weight='bold')
                     axes[0, 2].axis('off')
                     start_col = 3
                 else:
@@ -516,12 +516,12 @@ class NAFNetModel(BaseModel):
                     if feature_titles and i < len(feature_titles):
                         title = feature_titles[i]
                     else:
-                        title = f'{feature_name}\n特征能量分布'
+                        title = f'{feature_name}\nDistribution'
                     
                     im = axes[row, col].imshow(feature_energy, cmap=colormap, interpolation='bilinear')
                     axes[row, col].set_title(title, fontsize=14, weight='bold')
                     axes[row, col].axis('off')
-                    plt.colorbar(im, ax=axes[row, col], shrink=0.6, label='能量强度')
+                    plt.colorbar(im, ax=axes[row, col], shrink=0.6, label='Energy_power')
                 
                 # 隐藏未使用的特征位置
                 for i in range(len(features), len(feature_positions)):
@@ -529,12 +529,12 @@ class NAFNetModel(BaseModel):
                     axes[row, col].axis('off')
                 
                 # 添加整体标题和统计信息
-                plt.suptitle(f'特征分析 - {img_name}', fontsize=16, y=0.96, weight='bold')
+                plt.suptitle(f'feature_anlyse - {img_name}', fontsize=16, y=0.96, weight='bold')
                 
                 # 生成统计信息
                 stats_parts = []
                 for i, (feature_name, feature_energy) in enumerate(zip(features, feature_energies)):
-                    stats = f"{feature_name}: 均值={np.mean(feature_energy):.3f}, 最大={np.max(feature_energy):.3f}"
+                    stats = f"{feature_name}: mean={np.mean(feature_energy):.3f}, max={np.max(feature_energy):.3f}"
                     stats_parts.append(stats)
                 
                 stats_text = " | ".join(stats_parts)

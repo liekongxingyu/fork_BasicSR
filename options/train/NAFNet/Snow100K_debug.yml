@@ -1,5 +1,5 @@
 
-name: NAF-Snow100K-width16-01
+name: NAF-Snow100K-width16-01-debug
 model_type: NAFNetModel
 scale: 1
 num_gpu: 1
@@ -32,8 +32,8 @@ datasets:
   val:
     name: Snow100K-M
     type: PairedImageDataset
-    dataroot_gt: ../Dataset/Snow100K/Test/Snow100K-M/Gt
-    dataroot_lq: ../Dataset/Snow100K/Test/Snow100K-M/Snow
+    dataroot_gt: ../Dataset/Snow100K/Test/Snow100K-L/Gt
+    dataroot_lq: ../Dataset/Snow100K/Test/Snow100K-L/Snow
     io_backend:
       type: disk
 
@@ -49,7 +49,7 @@ network_g:
 
 # path
 path:
-  pretrain_network_g: ~
+  pretrain_network_g: ./experiments/NAF-Snow100K-width16-01_archived_20250817_222515/models/net_g_800.pth
   strict_load_g: true
   resume_state: ~
 
@@ -77,11 +77,11 @@ train:
 
 # validation settings
 val:
-  val_freq: !!float 800
+  val_freq: !!float 2
   save_img: false
-  save_vis: true  # 🆕 新增：是否保存频域分解的可视化结果
+  save_vis: false  # 🆕 新增：是否保存频域分解的可视化结果
   save_vis_freq: ~  # 🆕 新增：频域分解可视化结果保存频率
-  max_val_num: 40  # 🆕 新增：最大验证图像数量
+  max_val_num: 200  # 🆕 新增：最大验证图像数量
 
 
   metrics:

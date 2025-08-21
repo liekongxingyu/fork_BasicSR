@@ -13,7 +13,7 @@
       "env": {
         "PYTHONPATH": "${workspaceFolder}" // 设置你的包路径
       },
-      "args": ["-opt", "options/train/NAFNet/Snow100K.yml"],
+      "args": ["-opt", "options/train/NAFNet/Snow100K_debug.yml"],
     }
   ]
 }
