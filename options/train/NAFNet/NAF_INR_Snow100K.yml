@@ -1,5 +1,5 @@
 
-name: NAF_INR-Rain100L-width16
+name: NAF_INR-Snow100K-width16-01-debug
 model_type: NAFNetModel
 scale: 1
 num_gpu: 1
@@ -7,12 +7,11 @@ manual_seed: 42
 
 datasets:
   train:
-    name: Rain100L
+    name: Snow100K
     type: PairedImageDataset
-    dataroot_gt1: ../Dataset/Rain100L/Train/Gt
-    dataroot_lq1: ../Dataset/Rain100L/Train/Rain
+    dataroot_gt1: ../Dataset/Snow100K/Train/Gt
+    dataroot_lq1: ../Dataset/Snow100K/Train/Snow
 
-  
     filename_tmpl: '{}'
     io_backend:
       type: disk
@@ -31,10 +30,10 @@ datasets:
     prefetch_mode: ~
 
   val:
-    name: Rain100L
+    name: Snow100K-M
     type: PairedImageDataset
-    dataroot_gt: ../Dataset/Rain100L/Test/Gt
-    dataroot_lq: ../Dataset/Rain100L/Test/Rain
+    dataroot_gt: ../Dataset/Snow100K/Test/Snow100K-L/Gt
+    dataroot_lq: ../Dataset/Snow100K/Test/Snow100K-L/Snow
     io_backend:
       type: disk
 
@@ -82,11 +81,11 @@ train:
 
 # validation settings
 val:
-  val_freq: !!float 500
+  val_freq: !!float 1000
   save_img: false
-  save_vis: true  # 🆕 新增：是否保存频域分解的可视化结果
+  save_vis: false  # 🆕 新增：是否保存频域分解的可视化结果
   save_vis_freq: ~  # 🆕 新增：频域分解可视化结果保存频率
-  max_val_num: 40  # 🆕 新增：最大验证图像数量
+  max_val_num: 200  # 🆕 新增：最大验证图像数量
 
 
   metrics:
@@ -101,8 +100,8 @@ val:
 
 # logging settings
 logger:
-  print_freq: 2
-  save_checkpoint_freq: !!float 500
+  print_freq: 500
+  save_checkpoint_freq: !!float 1000
   use_tb_logger: true
   wandb:
     project: ~
