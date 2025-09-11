@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from basicsr.utils.registry import ARCH_REGISTRY
 
-
+from basicsr.archs.NAFNet_util import ContextExtractor, DegradationINR
 
 class LayerNormFunction(torch.autograd.Function):
 
@@ -239,6 +239,8 @@ class NAF_Baseline(nn.Module):
 
         self.padder_size = 2 ** len(self.encoders)
 
+
+
     def forward(self, inp):
         B, C, H, W = inp.shape
         inp = self.check_image_size(inp)
@@ -311,6 +313,147 @@ class BaselineLocal(Local_Base, NAF_Baseline):
         self.eval()
         with torch.no_grad():
             self.convert(base_size=base_size, train_size=train_size, fast_imp=fast_imp)
+
+
+@ARCH_REGISTRY.register()
+class NAF_Baseline_INR(nn.Module):
+    def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[], 
+                 dw_expand=1, ffn_expand=2, inr_d=128, context_dim=256, degradation_types=10):
+        super().__init__()
+
+        # 原始NAF结构
+        self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
+        self.ending = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
+
+        self.encoders = nn.ModuleList()
+        self.decoders = nn.ModuleList()
+        self.middle_blks = nn.ModuleList()
+        self.ups = nn.ModuleList()
+        self.downs = nn.ModuleList()
+
+        chan = width
+        for num in enc_blk_nums:
+            self.encoders.append(
+                nn.Sequential(
+                    *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)]
+                )
+            )
+            self.downs.append(nn.Conv2d(chan, 2*chan, 2, 2))
+            chan = chan * 2
+
+        self.middle_blks = nn.Sequential(
+            *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(middle_blk_num)]
+        )
+
+        for num in dec_blk_nums:
+            self.ups.append(
+                nn.Sequential(
+                    nn.Conv2d(chan, chan * 2, 1, bias=False),
+                    nn.PixelShuffle(2)
+                )
+            )
+            chan = chan // 2
+            self.decoders.append(
+                nn.Sequential(
+                    *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)]
+                )
+            )
+
+        self.padder_size = 2 ** len(self.encoders)
+
+        # 添加隐式神经场组件
+        self.context_extractor = ContextExtractor(context_dim)
+        self.degradation_inr = DegradationINR(d=inr_d, context_dim=context_dim, num_degradation_types=degradation_types)
+        
+        # 为每个解码器阶段创建适配层，将退化向量维度调整为对应特征图通道数
+        decoder_channels = []
+        temp_chan = width * (2 ** len(enc_blk_nums))
+        for _ in dec_blk_nums:
+            temp_chan = temp_chan // 2
+            decoder_channels.append(temp_chan)
+        
+        self.inr_adapters = nn.ModuleList()
+        for i, dec_chan in enumerate(decoder_channels):
+            self.inr_adapters.append(
+                nn.Conv2d(inr_d, dec_chan, 1, 1, 0)  # 1x1卷积适配通道数
+            )
+
+    def forward(self, inp):
+        B, C, H, W = inp.shape
+        inp = self.check_image_size(inp)
+
+        # 提取全局上下文
+        context_vector = self.context_extractor(inp)  # [B, 256]
+
+        x = self.intro(inp)
+        encs = []
+
+        # 编码阶段
+        flag_enc = 1
+        for encoder, down in zip(self.encoders, self.downs):
+            x = encoder(x)
+            encs.append(x)
+            x = down(x)
+
+            if flag_enc == 1:
+                feature1 = x
+            if flag_enc == 3:
+                feature2 = x
+            flag_enc += 1
+
+        x = self.middle_blks(x)
+        feature3 = x
+
+        # 解码阶段 - 在每个解码器后使用隐式神经场加权
+        flag_dec = 1
+        for decoder, up, enc_skip, inr_adapter in zip(self.decoders, self.ups, encs[::-1], self.inr_adapters):
+            x = up(x)
+            x = x + enc_skip
+            x = decoder(x)
+
+            # 关键步骤：使用隐式神经场输出加权当前特征图
+            current_h, current_w = x.shape[2], x.shape[3]
+            
+            # 生成退化向量图
+            degradation_map = self.degradation_inr(
+                context_vector,       # [B, 256]
+                (current_h, current_w)  # 当前特征图尺寸
+            )  # [B, inr_d, current_h, current_w]
+            
+            # 适配退化向量维度到当前特征图通道数
+            weight_map = inr_adapter(degradation_map)  # [B, current_channels, H, W]
+            weight_map = torch.sigmoid(weight_map)     # 归一化到[0,1]范围
+            
+            # print(x.shape, weight_map.shape)
+
+            # 加权特征图
+            x = x * weight_map  # 逐元素相乘
+
+            if flag_dec == 2:
+                feature4 = x
+            if flag_dec == 4:
+                feature5 = x
+            flag_dec += 1
+
+        x = self.ending(x)
+        x = x + inp
+        x = x[:, :, :H, :W]
+
+        return {
+            'output': x,
+            'feature1': feature1,
+            'feature2': feature2,
+            'feature3': feature3,
+            'feature4': feature4,
+            'feature5': feature5
+        }
+
+    def check_image_size(self, x):
+        _, _, h, w = x.size()
+        mod_pad_h = (self.padder_size - h % self.padder_size) % self.padder_size
+        mod_pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
+        x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
+        return x
 
 if __name__ == '__main__':
     img_channel = 3

@@ -4,6 +4,10 @@ from collections import OrderedDict
 from os import path as osp
 from tqdm import tqdm
 
+import torch.nn.functional as F
+import torch.nn as nn
+
+
 from basicsr.archs import build_network
 from basicsr.losses import build_loss
 from basicsr.metrics import calculate_metric
@@ -13,11 +17,11 @@ from .base_model import BaseModel
 
 
 @MODEL_REGISTRY.register()
-class SRModel(BaseModel):
+class PoolNetModel(BaseModel):
     """Base SR model for single image super-resolution."""
 
     def __init__(self, opt):
-        super(SRModel, self).__init__(opt)
+        super(PoolNetModel, self).__init__(opt)
 
         self.save_vis = opt["val"]["save_vis"]  # 是否保存可视化结果
 
@@ -98,51 +102,56 @@ class SRModel(BaseModel):
         self.optimizer_g.zero_grad()
         preds = self.net_g(self.lq)
 
-        if isinstance(preds, dict):
-            # 字典输出：取主要输出用于损失计算
-            self.output = preds['output']
-            self.sr = preds['output']
-            # 保存中间结果用于可视化，动态处理特征
-            for key, value in preds.items():
-                if key != 'output':
-                    setattr(self, key, value)
-            # 用于损失计算的输出列表
-            preds_for_loss = [preds['output']]
+        self.cri_pix = nn.L1Loss()
 
-        elif isinstance(preds, list):
-            # 列表输出：保持原有逻辑
-            self.output = preds[-1]
-            self.sr = preds[-1]
-            preds_for_loss = preds
-
-        else:
-            # 单tensor输出
-            self.output = preds
-            self.sr = preds
-            preds_for_loss = [preds]
+        # 列表输出：保持原有逻辑
+        self.output = preds[-1]
+        self.sr = preds[-1]
 
 
-        l_total = 0
-        loss_dict = OrderedDict()
-        # pixel loss
-        if self.cri_pix:
-            l_pix = self.cri_pix(self.output, self.gt)
-            l_total += l_pix
-            loss_dict['l_pix'] = l_pix
-        # perceptual loss
-        if self.cri_perceptual:
-            l_percep, l_style = self.cri_perceptual(self.output, self.gt)
-            if l_percep is not None:
-                l_total += l_percep
-                loss_dict['l_percep'] = l_percep
-            if l_style is not None:
-                l_total += l_style
-                loss_dict['l_style'] = l_style
+        preds_for_loss = preds
 
-        l_total.backward()
+        label_img = self.gt
+
+        label_img2 = F.interpolate(label_img, scale_factor=0.5, mode='bilinear')
+        label_img4 = F.interpolate(label_img, scale_factor=0.25, mode='bilinear')
+
+        l1 = self.cri_pix(preds[0], label_img4)
+        l2 = self.cri_pix(preds[1], label_img2)
+        l3 = self.cri_pix(preds[2], label_img)
+
+        loss_content = l1+l2+l3
+
+        label_fft1 = torch.fft.fft2(label_img4, dim=(-2,-1))
+        label_fft1 = torch.stack((label_fft1.real, label_fft1.imag), -1)
+
+        pred_fft1 = torch.fft.fft2(preds[0], dim=(-2,-1))
+        pred_fft1 = torch.stack((pred_fft1.real, pred_fft1.imag), -1)
+
+        label_fft2 = torch.fft.fft2(label_img2, dim=(-2,-1))
+        label_fft2 = torch.stack((label_fft2.real, label_fft2.imag), -1)
+
+        pred_fft2 = torch.fft.fft2(preds[1], dim=(-2,-1))
+        pred_fft2 = torch.stack((pred_fft2.real, pred_fft2.imag), -1)
+
+        label_fft3 = torch.fft.fft2(label_img, dim=(-2,-1))
+        label_fft3 = torch.stack((label_fft3.real, label_fft3.imag), -1)
+
+        pred_fft3 = torch.fft.fft2(preds[2], dim=(-2,-1))
+        pred_fft3 = torch.stack((pred_fft3.real, pred_fft3.imag), -1)
+
+
+        f1 = self.cri_pix(pred_fft1, label_fft1)
+        f2 = self.cri_pix(pred_fft2, label_fft2)
+        f3 = self.cri_pix(pred_fft3, label_fft3)
+        loss_fft = f1+f2+f3
+
+
+        loss = loss_content + 0.1 * loss_fft
+        loss.backward()
+
         self.optimizer_g.step()
 
-        self.log_dict = self.reduce_loss_dict(loss_dict)
 
         if self.ema_decay > 0:
             self.model_ema(decay=self.ema_decay)

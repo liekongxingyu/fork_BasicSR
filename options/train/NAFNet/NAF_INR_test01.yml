@@ -1,5 +1,5 @@
 
-name: NAF-Rain100L-width16
+name: NAF_INR-Rain100L-width16
 model_type: NAFNetModel
 scale: 1
 num_gpu: 1
@@ -12,6 +12,7 @@ datasets:
     dataroot_gt1: ../Dataset/Rain100L/Train/Gt
     dataroot_lq1: ../Dataset/Rain100L/Train/Rain
 
+  
     filename_tmpl: '{}'
     io_backend:
       type: disk
@@ -39,13 +40,17 @@ datasets:
 
 
 network_g:
-  type: NAF_Baseline
+  type: NAF_Baseline_INR
   width: 16
   enc_blk_nums: [1, 1, 1, 28]
   middle_blk_num: 1
   dec_blk_nums: [1, 1, 1, 1]
+  dec_blk_nums: [2, 2, 2, 2]
+  inr_d: 64
+  context_dim: 256
   dw_expand: 1
   ffn_expand: 2
+  degradation_types: 10
 
 # path
 path:

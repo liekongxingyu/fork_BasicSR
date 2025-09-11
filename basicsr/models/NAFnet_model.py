@@ -39,7 +39,8 @@ class NAFNetModel(BaseModel):
         self.save_vis_freq = opt["val"].get("save_vis_freq")  # 可视化结果保存频率
         if self.save_vis_freq is None:
             self.save_vis_freq = int(opt['val']['val_freq'])
-        print(self.save_vis_freq)
+        
+        # print(self.save_vis_freq)
 
         # define network
         self.net_g = build_network(deepcopy(opt['network_g']))
