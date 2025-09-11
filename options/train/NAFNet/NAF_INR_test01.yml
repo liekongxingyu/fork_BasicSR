@@ -45,7 +45,6 @@ network_g:
   enc_blk_nums: [1, 1, 1, 28]
   middle_blk_num: 1
   dec_blk_nums: [1, 1, 1, 1]
-  dec_blk_nums: [2, 2, 2, 2]
   inr_d: 64
   context_dim: 256
   dw_expand: 1
