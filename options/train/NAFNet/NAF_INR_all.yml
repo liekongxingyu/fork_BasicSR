@@ -1,5 +1,5 @@
 
-name: NAF_INR-Snow100K-width16-01-debug
+name: NAF_INR-Snow100K-width16-01
 model_type: NAFNetModel
 scale: 1
 num_gpu: 1
