@@ -99,12 +99,11 @@ class MLP(nn.Module):
 
 # 隐式神经退化场 - 内部生成退化类型版本
 class DegradationINR(nn.Module):
-    def __init__(self, d,context_dim=256, encoding_type="embedding", 
+    def __init__(self, d,context_dim=256,
                  cell_decode=True, num_degradation_types=10):
         super().__init__()
         self.d = d  
         self.context_dim = context_dim
-        self.encoding_type = encoding_type  
         self.cell_decode = cell_decode
         self.num_degradation_types = num_degradation_types
         
@@ -117,15 +116,9 @@ class DegradationINR(nn.Module):
             nn.Linear(64, num_degradation_types)
         )
 
-        # 根据编码类型设置退化类型维度
-        if encoding_type == 'embedding':
-            self.embed_dim = 32
-            self.deg_type_dim = self.embed_dim
-            self.degradation_embedding = nn.Embedding(num_degradation_types, self.embed_dim)
-        elif encoding_type == 'onehot':
-            self.deg_type_dim = num_degradation_types
-        else:  # scalar
-            self.deg_type_dim = 1
+
+        self.embed_dim = 10
+        self.deg_type_dim = self.embed_dim
 
         # 计算MLP输入维度
         imnet_in_dim = 2 + 4 * L + self.deg_type_dim + context_dim
@@ -139,16 +132,7 @@ class DegradationINR(nn.Module):
         """根据上下文向量生成退化类型"""
         logits = self.degradation_predictor(context_vector)  # [B, num_types]
         
-        if self.encoding_type == 'embedding':
-            # 使用argmax获得最可能的退化类型
-            degradation_ids = torch.argmax(logits, dim=1)  # [B]
-            return self.degradation_embedding(degradation_ids)  # [B, embed_dim]
-        elif self.encoding_type == 'onehot':
-            # 使用softmax获得概率分布作为软one-hot
-            return torch.softmax(logits, dim=1)  # [B, num_types]
-        else:  # scalar
-            # 使用平均值作为标量退化强度
-            return torch.mean(torch.softmax(logits, dim=1), dim=1, keepdim=True)  # [B, 1]
+        return logits
 
     def query_degradation_vector(self, input_size,coord, context_vector, cell=None):
         """
@@ -169,6 +153,8 @@ class DegradationINR(nn.Module):
         
         # 内部生成退化类型编码
         deg_encoded = self.generate_degradation_type(context_vector)  # [B, deg_type_dim]
+
+        # print(deg_encoded)
         deg_expanded = deg_encoded.unsqueeze(1).expand(B, N, self.deg_type_dim)  # [B, H*W, deg_type_dim]
         
         # 扩展上下文向量到所有像素
@@ -255,7 +241,6 @@ def test_degradation_inr():
     degradation_inr = DegradationINR(
         d=degradation_dim, 
         context_dim=context_dim,
-        encoding_type="embedding",
         num_degradation_types=10
     ).to(device)
     
