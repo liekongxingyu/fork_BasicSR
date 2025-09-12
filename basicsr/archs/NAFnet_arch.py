@@ -315,10 +315,76 @@ class BaselineLocal(Local_Base, NAF_Baseline):
             self.convert(base_size=base_size, train_size=train_size, fast_imp=fast_imp)
 
 
+class DegradationInjector(nn.Module):
+    """
+    抽象的退化注入模块，支持多种注入策略
+    """
+    def __init__(self, inr_d, target_channels, injection_type='channel_modulation'):
+        """
+        Args:
+            inr_d: INR输出的退化向量维度
+            target_channels: 目标特征图的通道数
+            injection_type: 注入方式 ('channel_modulation', 'spatial_attention', 'feature_fusion')
+        """
+        super().__init__()
+        self.inr_d = inr_d
+        self.target_channels = target_channels
+        self.injection_type = injection_type
+        
+        if injection_type == 'channel_modulation':
+            # 通道调制：将退化向量映射到通道权重
+            self.channel_adapter = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),  # 全局平均池化
+                nn.Conv2d(inr_d, target_channels, 1, 1, 0),
+                nn.Sigmoid()
+            )
+        
+        elif injection_type == 'spatial_attention':
+            # 空间注意力：生成空间权重图
+            self.spatial_adapter = nn.Sequential(
+                nn.Conv2d(inr_d, target_channels // 4, 3, 1, 1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(target_channels // 4, 1, 1, 1, 0),
+                nn.Sigmoid()
+            )
+        
+        elif injection_type == 'feature_fusion':
+            # 特征融合：直接融合退化特征和原始特征
+            self.feature_adapter = nn.Conv2d(inr_d, target_channels, 1, 1, 0)
+            self.fusion_conv = nn.Conv2d(2 * target_channels, target_channels, 1, 1, 0)
+        
+        else:
+            raise ValueError(f"Unsupported injection_type: {injection_type}")
+    
+    def forward(self, features, degradation_map):
+        """
+        Args:
+            features: [B, target_channels, H, W] 原始特征图
+            degradation_map: [B, inr_d, H, W] 退化向量图
+        Returns:
+            modulated_features: [B, target_channels, H, W] 调制后的特征图
+        """
+        if self.injection_type == 'channel_modulation':
+            # 通道调制策略
+            channel_weights = self.channel_adapter(degradation_map)  # [B, target_channels, 1, 1]
+            return features * channel_weights
+        
+        elif self.injection_type == 'spatial_attention':
+            # 空间注意力策略
+            spatial_weights = self.spatial_adapter(degradation_map)  # [B, 1, H, W]
+            return features * spatial_weights
+        
+        elif self.injection_type == 'feature_fusion':
+            # 特征融合策略
+            adapted_degradation = self.feature_adapter(degradation_map)  # [B, target_channels, H, W]
+            fused_features = torch.cat([features, adapted_degradation], dim=1)  # [B, 2*target_channels, H, W]
+            return self.fusion_conv(fused_features)  # [B, target_channels, H, W]
+
+
 @ARCH_REGISTRY.register()
 class NAF_Baseline_INR(nn.Module):
     def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[], 
-                 dw_expand=1, ffn_expand=2, inr_d=128, context_dim=256, degradation_types=10):
+                 dw_expand=1, ffn_expand=2, inr_d=128, context_dim=256, degradation_types=10,injection_type='channel_modulation',inject_middle=True):
         super().__init__()
 
         # 原始NAF结构
@@ -330,6 +396,10 @@ class NAF_Baseline_INR(nn.Module):
         self.middle_blks = nn.ModuleList()
         self.ups = nn.ModuleList()
         self.downs = nn.ModuleList()
+
+        self.inject_middle = inject_middle
+        self.injection_type = injection_type
+
 
         chan = width
         for num in enc_blk_nums:
@@ -344,6 +414,9 @@ class NAF_Baseline_INR(nn.Module):
         self.middle_blks = nn.Sequential(
             *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(middle_blk_num)]
         )
+
+        self.middle_channels = chan
+
 
         for num in dec_blk_nums:
             self.ups.append(
@@ -365,25 +438,14 @@ class NAF_Baseline_INR(nn.Module):
         self.context_extractor = ContextExtractor(context_dim)
         self.degradation_inr = DegradationINR(d=inr_d, context_dim=context_dim, num_degradation_types=degradation_types)
         
-        # 为每个解码器阶段创建适配层，将退化向量维度调整为对应特征图通道数
-        decoder_channels = []
-        temp_chan = width * (2 ** len(enc_blk_nums))
-        for _ in dec_blk_nums:
-            temp_chan = temp_chan // 2
-            decoder_channels.append(temp_chan)
-        
-        self.inr_adapters = nn.ModuleList()
-        for i, dec_chan in enumerate(decoder_channels):
-            self.inr_adapters.append(
-                nn.Conv2d(inr_d, dec_chan, 1, 1, 0)  # 1x1卷积适配通道数
+        if self.inject_middle:
+            # 在中间块注入
+            self.middle_injector = DegradationInjector(
+                inr_d=inr_d, 
+                target_channels=self.middle_channels,
+                injection_type=injection_type
             )
 
-        # 在__init__方法中添加
-        self.attention_fusion_convs = nn.ModuleList()
-        for i, dec_chan in enumerate(decoder_channels):
-            self.attention_fusion_convs.append(
-                nn.Conv2d(2 * dec_chan, dec_chan, 1, 1, 0)  # 融合2倍通道到原始通道数
-            )
 
 
     def forward(self, inp):
@@ -410,40 +472,35 @@ class NAF_Baseline_INR(nn.Module):
             flag_enc += 1
 
         x = self.middle_blks(x)
+
+        
+
+        if self.inject_middle:
+            current_h, current_w = x.shape[2], x.shape[3]
+            
+            # 生成退化向量图（针对中间特征图尺寸）
+            degradation_map = self.degradation_inr(
+                context_vector,
+                (current_h, current_w)
+            )  # [B, inr_d, current_h, current_w]
+            
+            # 使用注入模块调制中间特征
+            x = self.middle_injector(x, degradation_map)
+
         feature3 = x
 
         # 解码阶段 - 使用分解式调制
         flag_dec = 1
-        for decoder, up, enc_skip, inr_adapter, fusion_conv in zip(
-            self.decoders, self.ups, encs[::-1], self.inr_adapters, self.attention_fusion_convs
-        ):
-            x = up(x)
-            x = x + enc_skip
-            x = decoder(x)
+        for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
+                x = up(x)
+                x = x + enc_skip
+                x = decoder(x)
 
-            # 关键步骤：使用分解式调制替代直接相乘
-            current_h, current_w = x.shape[2], x.shape[3]
-            current_channels = x.shape[1]
-            
-            # 生成退化向量图
-            degradation_map = self.degradation_inr(
-                context_vector,       # [B, 256]
-                (current_h, current_w)  # 当前特征图尺寸
-            )  # [B, inr_d, current_h, current_w]
-            
-            
-            # 2. 通道调制：不同特征通道对退化的敏感性
-            channel_weight = F.adaptive_avg_pool2d(degradation_map, 1)  # [B, inr_d, 1, 1]
-            channel_weight = inr_adapter(channel_weight)  # [B, current_channels, 1, 1]
-            channel_weight = torch.sigmoid(channel_weight)  # 归一化到[0,1]
-            
-            x = x * channel_weight      # [B, C, H, W] * [B, C, 1, 1] = [B, C, H, W]
-            
-            if flag_dec == 2:
-                feature4 = x
-            if flag_dec == 4:
-                feature5 = x
-            flag_dec += 1
+                if flag_dec == 2:
+                    feature4 = x
+                if flag_dec == 4:
+                    feature5 = x
+                flag_dec += 1
 
         x = self.ending(x)
         x = x + inp
