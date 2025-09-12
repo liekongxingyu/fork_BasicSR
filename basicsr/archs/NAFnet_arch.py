@@ -431,26 +431,14 @@ class NAF_Baseline_INR(nn.Module):
                 (current_h, current_w)  # 当前特征图尺寸
             )  # [B, inr_d, current_h, current_w]
             
-            # 分解式调制
-            # 1. 空间调制：哪些空间位置受退化影响更严重
-            spatial_weight = torch.mean(degradation_map, dim=1, keepdim=True)  # [B, 1, H, W]
-            spatial_weight = torch.sigmoid(spatial_weight)  # 归一化到[0,1]
             
             # 2. 通道调制：不同特征通道对退化的敏感性
             channel_weight = F.adaptive_avg_pool2d(degradation_map, 1)  # [B, inr_d, 1, 1]
             channel_weight = inr_adapter(channel_weight)  # [B, current_channels, 1, 1]
             channel_weight = torch.sigmoid(channel_weight)  # 归一化到[0,1]
             
-            # 3. x分别与两个注意力相乘
-            x_spatial = x * spatial_weight      # [B, C, H, W] * [B, 1, H, W] = [B, C, H, W]
-            x_channel = x * channel_weight      # [B, C, H, W] * [B, C, 1, 1] = [B, C, H, W]
+            x = x * channel_weight      # [B, C, H, W] * [B, C, 1, 1] = [B, C, H, W]
             
-            # 4. 在通道维度拼接两个调制后的特征
-            x_concat = torch.cat([x_spatial, x_channel], dim=1)  # [B, 2*C, H, W]
-            
-            # 5. 1x1卷积学习最优融合策略
-            x = fusion_conv(x_concat)  # 使用当前解码器阶段对应的融合卷积
-
             if flag_dec == 2:
                 feature4 = x
             if flag_dec == 4:
