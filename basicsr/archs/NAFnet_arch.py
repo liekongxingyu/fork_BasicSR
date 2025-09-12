@@ -378,6 +378,14 @@ class NAF_Baseline_INR(nn.Module):
                 nn.Conv2d(inr_d, dec_chan, 1, 1, 0)  # 1x1卷积适配通道数
             )
 
+        # 在__init__方法中添加
+        self.attention_fusion_convs = nn.ModuleList()
+        for i, dec_chan in enumerate(decoder_channels):
+            self.attention_fusion_convs.append(
+                nn.Conv2d(2 * dec_chan, dec_chan, 1, 1, 0)  # 融合2倍通道到原始通道数
+            )
+
+
     def forward(self, inp):
         B, C, H, W = inp.shape
         inp = self.check_image_size(inp)
@@ -431,9 +439,14 @@ class NAF_Baseline_INR(nn.Module):
             channel_weight = inr_adapter(channel_weight)  # [B, current_channels, 1, 1]
             channel_weight = torch.sigmoid(channel_weight)  # 归一化到[0,1]
             
-            # 先进行空间调制（突出重要区域），再进行通道调制（突出重要特征）
-            x = x * spatial_weight      # 空间调制：[B,C,H,W] * [B,1,H,W]
-            x = x * channel_weight      # 通道调制：[B,C,H,W] * [B,C,1,1]
+            x_spatial = x * spatial_weight      # [B, C, H, W] * [B, 1, H, W] = [B, C, H, W]
+            x_channel = x * channel_weight      # [B, C, H, W] * [B, C, 1, 1] = [B, C, H, W]
+            
+            # 4. 在通道维度拼接两个调制后的特征
+            x_concat = torch.cat([x_spatial, x_channel], dim=1)  # [B, 2*C, H, W]
+            
+            # 5. 1x1卷积学习最优融合策略
+            x = self.attention_fusion_convs(x_concat)  
 
             if flag_dec == 2:
                 feature4 = x
