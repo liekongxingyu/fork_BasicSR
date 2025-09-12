@@ -365,17 +365,17 @@ class NAF_Baseline_INR(nn.Module):
         self.context_extractor = ContextExtractor(context_dim)
         self.degradation_inr = DegradationINR(d=inr_d, context_dim=context_dim, num_degradation_types=degradation_types)
         
-        # 为每个解码器阶段创建适配层，将退化向量维度调整为对应特征图通道数
-        decoder_channels = []
-        temp_chan = width * (2 ** len(enc_blk_nums))
-        for _ in dec_blk_nums:
-            temp_chan = temp_chan // 2
-            decoder_channels.append(temp_chan)
+        # 移除解码器的INR适配器，改为编码器的INR适配器
+        encoder_channels = []
+        temp_chan = width
+        for i in range(len(enc_blk_nums)):
+            encoder_channels.append(temp_chan)
+            temp_chan = temp_chan * 2
         
         self.inr_adapters = nn.ModuleList()
-        for i, dec_chan in enumerate(decoder_channels):
+        for i, enc_chan in enumerate(encoder_channels):
             self.inr_adapters.append(
-                nn.Conv2d(inr_d, dec_chan, 1, 1, 0)  # 1x1卷积适配通道数
+                nn.Conv2d(inr_d, enc_chan, 1, 1, 0)  # 1x1卷积适配通道数
             )
 
     def forward(self, inp):
@@ -388,30 +388,12 @@ class NAF_Baseline_INR(nn.Module):
         x = self.intro(inp)
         encs = []
 
-        # 编码阶段
+        # 编码阶段 - 使用隐式神经场加权
         flag_enc = 1
-        for encoder, down in zip(self.encoders, self.downs):
+        for i, (encoder, down, inr_adapter) in enumerate(zip(self.encoders, self.downs, self.inr_adapters)):
             x = encoder(x)
-            encs.append(x)
-            x = down(x)
-
-            if flag_enc == 1:
-                feature1 = x
-            if flag_enc == 3:
-                feature2 = x
-            flag_enc += 1
-
-        x = self.middle_blks(x)
-        feature3 = x
-
-        # 解码阶段 - 在每个解码器后使用隐式神经场加权
-        flag_dec = 1
-        for decoder, up, enc_skip, inr_adapter in zip(self.decoders, self.ups, encs[::-1], self.inr_adapters):
-            x = up(x)
-            x = x + enc_skip
-            x = decoder(x)
-
-            # 关键步骤：使用隐式神经场输出加权当前特征图
+            
+            # 关键步骤：使用隐式神经场输出加权当前编码器特征图
             current_h, current_w = x.shape[2], x.shape[3]
             
             # 生成退化向量图
@@ -424,10 +406,27 @@ class NAF_Baseline_INR(nn.Module):
             weight_map = inr_adapter(degradation_map)  # [B, current_channels, H, W]
             weight_map = torch.sigmoid(weight_map)     # 归一化到[0,1]范围
             
-            # print(x.shape, weight_map.shape)
-
             # 加权特征图
             x = x * weight_map  # 逐元素相乘
+            
+            encs.append(x)
+            x = down(x)
+
+            if flag_enc == 1:
+                feature1 = x
+            if flag_enc == 3:
+                feature2 = x
+            flag_enc += 1
+
+        x = self.middle_blks(x)
+        feature3 = x
+
+        # 解码阶段 - 移除INR，回到标准解码过程
+        flag_dec = 1
+        for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
+            x = up(x)
+            x = x + enc_skip
+            x = decoder(x)
 
             if flag_dec == 2:
                 feature4 = x
@@ -454,6 +453,7 @@ class NAF_Baseline_INR(nn.Module):
         mod_pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
         x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
         return x
+
 
 if __name__ == '__main__':
     img_channel = 3
