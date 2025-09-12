@@ -117,7 +117,7 @@ class DegradationINR(nn.Module):
         )
 
 
-        self.embed_dim = 10
+        self.embed_dim = 20
         self.deg_type_dim = self.embed_dim
 
         # 计算MLP输入维度
