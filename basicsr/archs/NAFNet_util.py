@@ -105,7 +105,7 @@ class DegradationINR(nn.Module):
         self.d = d  
         self.context_dim = context_dim
         self.cell_decode = cell_decode
-        self.num_degradation_types = num_degradation_types
+        self.deg_type_dim = num_degradation_types
         
         # 添加退化类型生成器 - 从上下文向量中预测退化类型
         self.degradation_predictor = nn.Sequential(
@@ -113,12 +113,8 @@ class DegradationINR(nn.Module):
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Linear(64, num_degradation_types)
+            nn.Linear(64, self.deg_type_dim)
         )
-
-
-        self.embed_dim = 20
-        self.deg_type_dim = self.embed_dim
 
         # 计算MLP输入维度
         imnet_in_dim = 2 + 4 * L + self.deg_type_dim + context_dim
@@ -129,10 +125,10 @@ class DegradationINR(nn.Module):
         self.imnet = MLP(imnet_in_dim, d, hidden_list)
 
     def generate_degradation_type(self, context_vector):
-        """根据上下文向量生成退化类型"""
-        logits = self.degradation_predictor(context_vector)  # [B, num_types]
-        
-        return logits
+        # 直接返回 softmax 概率，维度 [B, deg_type_dim]
+        logits = self.degradation_predictor(context_vector)
+        probs = torch.softmax(logits, dim=-1)
+        return probs
 
     def query_degradation_vector(self, input_size,coord, context_vector, cell=None):
         """
