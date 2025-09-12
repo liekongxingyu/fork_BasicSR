@@ -1,5 +1,5 @@
 
-name: NAF-Snow100K-width16-01-debug
+name: NAF_INR-Snow100K-width16-01
 model_type: NAFNetModel
 scale: 1
 num_gpu: 1
@@ -39,17 +39,19 @@ datasets:
 
 
 network_g:
-  type: NAF_Baseline
+  type: NAF_Baseline_INR
   width: 16
   enc_blk_nums: [1, 1, 1, 28]
   middle_blk_num: 1
   dec_blk_nums: [1, 1, 1, 1]
+  inr_d: 64
+  context_dim: 256
   dw_expand: 1
   ffn_expand: 2
-
+  degradation_types: 20
 # path
 path:
-  pretrain_network_g: ./experiments/NAF-Snow100K-width16-01_archived_20250817_222515/models/net_g_800.pth
+  pretrain_network_g: ~
   strict_load_g: true
   resume_state: ~
 
@@ -71,13 +73,13 @@ train:
 
   # losses
   pixel_opt:
-    type: PSNRLoss
+    type: L1Loss
     loss_weight: 1
     reduction: mean
 
 # validation settings
 val:
-  val_freq: !!float 2
+  val_freq: !!float 500
   save_img: false
   save_vis: false  # 🆕 新增：是否保存频域分解的可视化结果
   save_vis_freq: ~  # 🆕 新增：频域分解可视化结果保存频率
@@ -96,8 +98,8 @@ val:
 
 # logging settings
 logger:
-  print_freq: 2
-  save_checkpoint_freq: !!float 100
+  print_freq: 50
+  save_checkpoint_freq: !!float 1000
   use_tb_logger: true
   wandb:
     project: ~
