@@ -315,192 +315,191 @@ class BaselineLocal(Local_Base, NAF_Baseline):
             self.convert(base_size=base_size, train_size=train_size, fast_imp=fast_imp)
 
 
+class MiddleBlockWithInjection(nn.Module):
+    """
+    由若干 BaselineBlock 组成的中间块；在每个子块之后执行一次退化注意力注入（若提供 inr 与 injector）。
+    去掉了 indices/pos 等可选参数，固定交替策略：Block -> 注入 -> Block -> 注入 ...
+    """
+    def __init__(self, chan, num_blocks, dw_expand, ffn_expand,
+                 injector: nn.Module | None,   # DegradationInjector 或 None
+                 inr: nn.Module | None):        # DegradationINR 或 None
+        super().__init__()
+        assert num_blocks >= 1
+        self.blocks = nn.ModuleList([BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num_blocks)])
+        self.injector = injector
+        self.inr = inr
+        self.chan = chan
+
+    def forward(self, x, context_vector):
+        """
+        x: [B, C, H, W]
+        context_vector: [B, context_dim]
+        """
+        do_inject = (self.injector is not None) and (self.inr is not None)
+        for blk in self.blocks:
+            x = blk(x)
+            if do_inject:
+                B, C, H, W = x.shape
+                deg_map = self.inr(context_vector, (H, W))   # [B, inr_d, H, W]
+                x = self.injector(x, deg_map)                # [B, C, H, W]
+        return x
+
+
 class DegradationInjector(nn.Module):
     """
-    抽象的退化注入模块，支持多种注入策略
+    退化注入器：将 DegradationINR 生成的退化图注入到特征图中。
+    injection_type:
+      - 'channel_modulation'：通道权重调制
+      - 'spatial_attention'  ：空间注意力
+      - 'feature_fusion'     ：特征拼接融合
     """
-    def __init__(self, inr_d, target_channels, injection_type='channel_modulation'):
-        """
-        Args:
-            inr_d: INR输出的退化向量维度
-            target_channels: 目标特征图的通道数
-            injection_type: 注入方式 ('channel_modulation', 'spatial_attention', 'feature_fusion')
-        """
+    def __init__(self, inr_d: int, target_channels: int, injection_type: str = 'channel_modulation'):
         super().__init__()
+        self.injection_type = injection_type
         self.inr_d = inr_d
         self.target_channels = target_channels
-        self.injection_type = injection_type
-        
+
         if injection_type == 'channel_modulation':
-            # 通道调制：将退化向量映射到通道权重
-            self.channel_adapter = nn.Sequential(
-                nn.AdaptiveAvgPool2d(1),  # 全局平均池化
-                nn.Conv2d(inr_d, target_channels, 1, 1, 0),
+            # 全局池化 + 1x1 映射到目标通道，Sigmoid 得到逐通道权重
+            self.adapter = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(inr_d, target_channels, kernel_size=1, stride=1, padding=0, bias=True),
                 nn.Sigmoid()
             )
-        
         elif injection_type == 'spatial_attention':
-            # 空间注意力：生成空间权重图
-            self.spatial_adapter = nn.Sequential(
-                nn.Conv2d(inr_d, target_channels // 4, 3, 1, 1),
+            # 3x3 提取空间线索到1通道，Sigmoid 得到逐像素权重
+            mid = max(target_channels // 4, 8)
+            self.adapter = nn.Sequential(
+                nn.Conv2d(inr_d, mid, kernel_size=3, stride=1, padding=1, bias=True),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(target_channels // 4, 1, 1, 1, 0),
+                nn.Conv2d(mid, 1, kernel_size=1, stride=1, padding=0, bias=True),
                 nn.Sigmoid()
             )
-        
         elif injection_type == 'feature_fusion':
-            # 特征融合：直接融合退化特征和原始特征
-            self.feature_adapter = nn.Conv2d(inr_d, target_channels, 1, 1, 0)
-            self.fusion_conv = nn.Conv2d(2 * target_channels, target_channels, 1, 1, 0)
-        
+            # 先把退化图映射到 C 通道，再与 X 拼接，用 1x1 融合回 C
+            self.map_to_c = nn.Conv2d(inr_d, target_channels, kernel_size=1, stride=1, padding=0, bias=True)
+            self.fuse = nn.Conv2d(target_channels * 2, target_channels, kernel_size=1, stride=1, padding=0, bias=True)
         else:
-            raise ValueError(f"Unsupported injection_type: {injection_type}")
-    
-    def forward(self, features, degradation_map):
+            raise ValueError(f'Unsupported injection_type: {injection_type}')
+
+    def forward(self, features: torch.Tensor, degradation_map: torch.Tensor) -> torch.Tensor:
         """
-        Args:
-            features: [B, target_channels, H, W] 原始特征图
-            degradation_map: [B, inr_d, H, W] 退化向量图
-        Returns:
-            modulated_features: [B, target_channels, H, W] 调制后的特征图
+        features: [B, C, H, W]
+        degradation_map: [B, inr_d, H, W]
+        return: [B, C, H, W]
         """
         if self.injection_type == 'channel_modulation':
-            # 通道调制策略
-            channel_weights = self.channel_adapter(degradation_map)  # [B, target_channels, 1, 1]
-            return features * channel_weights
-        
+            w = self.adapter(degradation_map)            # [B, C, 1, 1]
+            return features * w
         elif self.injection_type == 'spatial_attention':
-            # 空间注意力策略
-            spatial_weights = self.spatial_adapter(degradation_map)  # [B, 1, H, W]
-            return features * spatial_weights
-        
-        elif self.injection_type == 'feature_fusion':
-            # 特征融合策略
-            adapted_degradation = self.feature_adapter(degradation_map)  # [B, target_channels, H, W]
-            fused_features = torch.cat([features, adapted_degradation], dim=1)  # [B, 2*target_channels, H, W]
-            return self.fusion_conv(fused_features)  # [B, target_channels, H, W]
+            a = self.adapter(degradation_map)            # [B, 1, H, W]
+            return features * a
+        else:  # 'feature_fusion'
+            d_c = self.map_to_c(degradation_map)         # [B, C, H, W]
+            return self.fuse(torch.cat([features, d_c], dim=1))  # [B, C, H, W]
 
 
 @ARCH_REGISTRY.register()
 class NAF_Baseline_INR(nn.Module):
-    def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[], 
-                 dw_expand=1, ffn_expand=2, inr_d=128, context_dim=256, degradation_types=10,injection_type='channel_modulation',inject_middle=True):
+    def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[],
+                 dw_expand=1, ffn_expand=2, inr_d=128, context_dim=256, degradation_types=10,
+                 injection_type='channel_modulation', inject_middle=True):
         super().__init__()
 
-        # 原始NAF结构
-        self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
-        self.ending = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
-
-        self.encoders = nn.ModuleList()
-        self.decoders = nn.ModuleList()
-        self.middle_blks = nn.ModuleList()
-        self.ups = nn.ModuleList()
-        self.downs = nn.ModuleList()
+        # stem
+        self.intro = nn.Conv2d(img_channel, width, 3, 1, 1)
+        self.ending = nn.Conv2d(width, img_channel, 3, 1, 1)
 
         self.inject_middle = inject_middle
         self.injection_type = injection_type
 
-
+        # encoders
+        self.encoders = nn.ModuleList()
+        self.downs = nn.ModuleList()
         chan = width
         for num in enc_blk_nums:
             self.encoders.append(
-                nn.Sequential(
-                    *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)]
-                )
+                nn.Sequential(*[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)])
             )
             self.downs.append(nn.Conv2d(chan, 2*chan, 2, 2))
-            chan = chan * 2
+            chan *= 2
 
-        self.middle_blks = nn.Sequential(
-            *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(middle_blk_num)]
-        )
-
+        # middle channels
         self.middle_channels = chan
 
+        # degradation components
+        self.context_extractor = ContextExtractor(context_dim)
+        self.degradation_inr = DegradationINR(d=inr_d, context_dim=context_dim, num_degradation_types=degradation_types)
 
+        # 注入器（注意：这是 DegradationInjector，不是 DegradationINR）
+        self.middle_injector = DegradationInjector(
+            inr_d=inr_d, target_channels=self.middle_channels, injection_type=injection_type
+        ) if inject_middle else None
+
+        # middle 使用“layer”封装，非 Sequential；也可用 ModuleList
+        self.middle_blks = nn.ModuleList([
+            MiddleBlockWithInjection(
+                chan=self.middle_channels,
+                num_blocks=1,
+                dw_expand=dw_expand,
+                ffn_expand=ffn_expand,
+                injector=self.middle_injector,         # DegradationInjector 或 None
+                inr=self.degradation_inr,               # DegradationINR 或 None
+            ) for _ in range(middle_blk_num)
+        ])
+
+        # decoders
+        self.decoders = nn.ModuleList()
+        self.ups = nn.ModuleList()
         for num in dec_blk_nums:
-            self.ups.append(
-                nn.Sequential(
-                    nn.Conv2d(chan, chan * 2, 1, bias=False),
-                    nn.PixelShuffle(2)
-                )
-            )
-            chan = chan // 2
+            self.ups.append(nn.Sequential(
+                nn.Conv2d(chan, chan * 2, 1, bias=False),
+                nn.PixelShuffle(2)
+            ))
+            chan //= 2
             self.decoders.append(
-                nn.Sequential(
-                    *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)]
-                )
+                nn.Sequential(*[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)])
             )
 
         self.padder_size = 2 ** len(self.encoders)
-
-        # 添加隐式神经场组件
-        self.context_extractor = ContextExtractor(context_dim)
-        self.degradation_inr = DegradationINR(d=inr_d, context_dim=context_dim, num_degradation_types=degradation_types)
-        
-        if self.inject_middle:
-            # 在中间块注入
-            self.middle_injector = DegradationInjector(
-                inr_d=inr_d, 
-                target_channels=self.middle_channels,
-                injection_type=injection_type
-            )
-
-
 
     def forward(self, inp):
         B, C, H, W = inp.shape
         inp = self.check_image_size(inp)
 
-        # 提取全局上下文
-        context_vector = self.context_extractor(inp)  # [B, 256]
+        # context
+        context_vector = self.context_extractor(inp)  # [B, context_dim]
 
+        # encode
         x = self.intro(inp)
         encs = []
-
-        # 编码阶段
         flag_enc = 1
         for encoder, down in zip(self.encoders, self.downs):
             x = encoder(x)
             encs.append(x)
             x = down(x)
-
             if flag_enc == 1:
                 feature1 = x
             if flag_enc == 3:
                 feature2 = x
             flag_enc += 1
 
-        x = self.middle_blks(x)
-
-        
-
-        if self.inject_middle:
-            current_h, current_w = x.shape[2], x.shape[3]
-            
-            # 生成退化向量图（针对中间特征图尺寸）
-            degradation_map = self.degradation_inr(
-                context_vector,
-                (current_h, current_w)
-            )  # [B, inr_d, current_h, current_w]
-            
-            # 使用注入模块调制中间特征
-            x = self.middle_injector(x, degradation_map)
-
+        # middle（每个 MiddleBlockWithInjection 自己决定是否注入，无需额外再次注入）
+        for m in self.middle_blks:
+            x = m(x, context_vector)
         feature3 = x
 
-        # 解码阶段 - 使用分解式调制
+        # decode
         flag_dec = 1
         for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
-                x = up(x)
-                x = x + enc_skip
-                x = decoder(x)
-
-                if flag_dec == 2:
-                    feature4 = x
-                if flag_dec == 4:
-                    feature5 = x
-                flag_dec += 1
+            x = up(x)
+            x = x + enc_skip
+            x = decoder(x)
+            if flag_dec == 2:
+                feature4 = x
+            if flag_dec == 4:
+                feature5 = x
+            flag_dec += 1
 
         x = self.ending(x)
         x = x + inp
@@ -515,14 +514,12 @@ class NAF_Baseline_INR(nn.Module):
             'feature5': feature5
         }
 
-
-
     def check_image_size(self, x):
         _, _, h, w = x.size()
         mod_pad_h = (self.padder_size - h % self.padder_size) % self.padder_size
         mod_pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
-        x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
-        return x
+        return F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
+
 
 if __name__ == '__main__':
     img_channel = 3
