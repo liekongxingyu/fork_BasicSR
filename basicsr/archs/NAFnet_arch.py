@@ -414,7 +414,9 @@ class NAF_Baseline_INR(nn.Module):
 
         # 解码阶段 - 使用分解式调制
         flag_dec = 1
-        for decoder, up, enc_skip, inr_adapter in zip(self.decoders, self.ups, encs[::-1], self.inr_adapters):
+        for decoder, up, enc_skip, inr_adapter, fusion_conv in zip(
+            self.decoders, self.ups, encs[::-1], self.inr_adapters, self.attention_fusion_convs
+        ):
             x = up(x)
             x = x + enc_skip
             x = decoder(x)
@@ -429,7 +431,7 @@ class NAF_Baseline_INR(nn.Module):
                 (current_h, current_w)  # 当前特征图尺寸
             )  # [B, inr_d, current_h, current_w]
             
-            # 方案3：分解式调制
+            # 分解式调制
             # 1. 空间调制：哪些空间位置受退化影响更严重
             spatial_weight = torch.mean(degradation_map, dim=1, keepdim=True)  # [B, 1, H, W]
             spatial_weight = torch.sigmoid(spatial_weight)  # 归一化到[0,1]
@@ -439,6 +441,7 @@ class NAF_Baseline_INR(nn.Module):
             channel_weight = inr_adapter(channel_weight)  # [B, current_channels, 1, 1]
             channel_weight = torch.sigmoid(channel_weight)  # 归一化到[0,1]
             
+            # 3. x分别与两个注意力相乘
             x_spatial = x * spatial_weight      # [B, C, H, W] * [B, 1, H, W] = [B, C, H, W]
             x_channel = x * channel_weight      # [B, C, H, W] * [B, C, 1, 1] = [B, C, H, W]
             
@@ -446,7 +449,7 @@ class NAF_Baseline_INR(nn.Module):
             x_concat = torch.cat([x_spatial, x_channel], dim=1)  # [B, 2*C, H, W]
             
             # 5. 1x1卷积学习最优融合策略
-            x = self.attention_fusion_convs(x_concat)  
+            x = fusion_conv(x_concat)  # 使用当前解码器阶段对应的融合卷积
 
             if flag_dec == 2:
                 feature4 = x
@@ -466,6 +469,7 @@ class NAF_Baseline_INR(nn.Module):
             'feature4': feature4,
             'feature5': feature5
         }
+
 
 
     def check_image_size(self, x):
