@@ -388,9 +388,13 @@ class DegradationInjector(nn.Module):
         degradation_map: [B, inr_d, H, W]
         return: [B, C, H, W]
         """
+
+
         if self.injection_type == 'channel_modulation':
             w = self.adapter(degradation_map)            # [B, C, 1, 1]
-            return features * w
+            return features * w + features
+        
+        
         elif self.injection_type == 'spatial_attention':
             a = self.adapter(degradation_map)            # [B, 1, H, W]
             return features * a
