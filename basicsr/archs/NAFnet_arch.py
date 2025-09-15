@@ -297,10 +297,10 @@ class BaselineLocal(Local_Base, NAF_Baseline):
                          train_size=train_size, fast_imp=fast_imp)
 
 
-class MiddleBlockWithInjection(nn.Module):
+class EncoderBlockWithInjection(nn.Module):
     """
-    由若干 BaselineBlock 组成的中间块；在每个子块之后执行一次退化注意力注入（若提供 inr 与 injector）。
-    去掉了 indices/pos 等可选参数，固定交替策略：Block -> 注入 -> Block -> 注入 ...
+    编码器块，包含BaselineBlock + INR注入
+    在编码特征提取后、下采样前进行退化注入
     """
 
     def __init__(self, chan, num_blocks, dw_expand, ffn_expand,
@@ -308,8 +308,12 @@ class MiddleBlockWithInjection(nn.Module):
                  inr: nn.Module | None):        # DegradationINR 或 None
         super().__init__()
         assert num_blocks >= 1
-        self.blocks = nn.ModuleList(
-            [BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num_blocks)])
+
+        # 编码器的基础块
+        self.blocks = nn.Sequential(
+            *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num_blocks)]
+        )
+
         self.injector = injector
         self.inr = inr
         self.chan = chan
@@ -319,16 +323,59 @@ class MiddleBlockWithInjection(nn.Module):
         x: [B, C, H, W]
         context_vector: [B, context_dim]
         """
+        # 1. 先进行基础特征提取
+        x = self.blocks(x)
+
+        # 2. 在下采样前进行INR退化注入[web:94]
         do_inject = (self.injector is not None) and (self.inr is not None)
-        for blk in self.blocks:
-            x = blk(x)
-            if do_inject:
-                B, C, H, W = x.shape
-                deg_map = self.inr(context_vector, (H, W))   # [B, inr_d, H, W]
-                x = self.injector(x, deg_map)                # [B, C, H, W]
+        if do_inject:
+            B, C, H, W = x.shape
+            deg_map = self.inr(context_vector, (H, W))   # [B, inr_d, H, W]
+            x = self.injector(x, deg_map)                # [B, C, H, W]
+
         return x
 
 
+class DecoderBlockWithInjection(nn.Module):
+    """
+    解码器块，包含INR注入 + BaselineBlock
+    在skip connection融合后、特征解码前进行退化注入
+    """
+
+    def __init__(self, chan, num_blocks, dw_expand, ffn_expand,
+                 injector: nn.Module | None,   # DegradationInjector 或 None
+                 inr: nn.Module | None):        # DegradationINR 或 None
+        super().__init__()
+        assert num_blocks >= 1
+
+        # 解码器的基础块
+        self.blocks = nn.Sequential(
+            *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num_blocks)]
+        )
+
+        self.injector = injector
+        self.inr = inr
+        self.chan = chan
+
+    def forward(self, x, context_vector):
+        """
+        x: [B, C, H, W] (已经过up + skip connection)
+        context_vector: [B, context_dim]
+        """
+        # 1. 在特征解码前进行INR退化注入[web:96]
+        do_inject = (self.injector is not None) and (self.inr is not None)
+        if do_inject:
+            B, C, H, W = x.shape
+            deg_map = self.inr(context_vector, (H, W))   # [B, inr_d, H, W]
+            x = self.injector(x, deg_map)                # [B, C, H, W]
+
+        # 2. 再进行特征解码处理
+        x = self.blocks(x)
+
+        return x
+
+
+# 保持你原有的DegradationInjector不变
 class DegradationInjector(nn.Module):
     """
     退化注入器：将 DegradationINR 生成的退化图注入到特征图中。
@@ -393,68 +440,104 @@ class DegradationInjector(nn.Module):
 
 @ARCH_REGISTRY.register()
 class NAF_Baseline_INR(nn.Module):
+    """
+    修改版的NAF_Baseline_INR：
+    - 移除middle block的INR注入
+    - 在编码器和解码器的每个层级都添加INR注入
+    """
+
     def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[],
                  dw_expand=1, ffn_expand=2, inr_d=128, context_dim=256, degradation_types=10,
-                 injection_type='channel_modulation', inject_middle=True):
+                 injection_type='channel_modulation',
+                 inject_encoder=True,    # 是否在编码器注入
+                 inject_decoder=True):   # 是否在解码器注入
         super().__init__()
 
         # stem
         self.intro = nn.Conv2d(img_channel, width, 3, 1, 1)
         self.ending = nn.Conv2d(width, img_channel, 3, 1, 1)
 
-        self.inject_middle = inject_middle
+        self.inject_encoder = inject_encoder
+        self.inject_decoder = inject_decoder
         self.injection_type = injection_type
-
-        # encoders
-        self.encoders = nn.ModuleList()
-        self.downs = nn.ModuleList()
-        chan = width
-        for num in enc_blk_nums:
-            self.encoders.append(
-                nn.Sequential(
-                    *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)])
-            )
-            self.downs.append(nn.Conv2d(chan, 2*chan, 2, 2))
-            chan *= 2
-
-        # middle channels
-        self.middle_channels = chan
 
         # degradation components
         self.context_extractor = ContextExtractor(context_dim)
         self.degradation_inr = DegradationINR(
             d=inr_d, context_dim=context_dim, num_degradation_types=degradation_types)
 
-        # 注入器（注意：这是 DegradationInjector，不是 DegradationINR）
-        self.middle_injector = DegradationInjector(
-            inr_d=inr_d, target_channels=self.middle_channels, injection_type=injection_type
-        ) if inject_middle else None
+        # encoders with injection[web:99]
+        self.encoders = nn.ModuleList()
+        self.encoder_injectors = nn.ModuleList()
+        self.downs = nn.ModuleList()
+        chan = width
 
-        # middle 使用“layer”封装，非 Sequential；也可用 ModuleList
-        self.middle_blks = nn.ModuleList([
-            MiddleBlockWithInjection(
-                chan=self.middle_channels,
-                num_blocks=1,
+        for i, num in enumerate(enc_blk_nums):
+            # 创建编码器注入器
+            encoder_injector = DegradationInjector(
+                inr_d=inr_d,
+                target_channels=chan,
+                injection_type=injection_type
+            ) if inject_encoder else None
+
+            # 创建带注入的编码器块[web:94]
+            encoder_block = EncoderBlockWithInjection(
+                chan=chan,
+                num_blocks=num,
                 dw_expand=dw_expand,
                 ffn_expand=ffn_expand,
-                injector=self.middle_injector,         # DegradationInjector 或 None
-                inr=self.degradation_inr,               # DegradationINR 或 None
+                injector=encoder_injector,
+                inr=self.degradation_inr
+            )
+
+            self.encoders.append(encoder_block)
+            self.encoder_injectors.append(encoder_injector)
+            self.downs.append(nn.Conv2d(chan, 2*chan, 2, 2))
+            chan *= 2
+
+        # middle channels (去掉INR注入)
+        self.middle_channels = chan
+
+        # middle blocks (简化为普通的BaselineBlock)[web:96]
+        self.middle_blks = nn.ModuleList([
+            nn.Sequential(
+                *[BaselineBlock(self.middle_channels, dw_expand, ffn_expand)
+                  for _ in range(1)]
             ) for _ in range(middle_blk_num)
         ])
 
-        # decoders
+        # decoders with injection[web:101]
         self.decoders = nn.ModuleList()
+        self.decoder_injectors = nn.ModuleList()
         self.ups = nn.ModuleList()
-        for num in dec_blk_nums:
+
+        for i, num in enumerate(dec_blk_nums):
+            # 上采样层
             self.ups.append(nn.Sequential(
                 nn.Conv2d(chan, chan * 2, 1, bias=False),
                 nn.PixelShuffle(2)
             ))
             chan //= 2
-            self.decoders.append(
-                nn.Sequential(
-                    *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)])
+
+            # 创建解码器注入器
+            decoder_injector = DegradationInjector(
+                inr_d=inr_d,
+                target_channels=chan,
+                injection_type=injection_type
+            ) if inject_decoder else None
+
+            # 创建带注入的解码器块[web:96]
+            decoder_block = DecoderBlockWithInjection(
+                chan=chan,
+                num_blocks=num,
+                dw_expand=dw_expand,
+                ffn_expand=ffn_expand,
+                injector=decoder_injector,
+                inr=self.degradation_inr
             )
+
+            self.decoders.append(decoder_block)
+            self.decoder_injectors.append(decoder_injector)
 
         self.padder_size = 2 ** len(self.encoders)
 
@@ -462,51 +545,39 @@ class NAF_Baseline_INR(nn.Module):
         B, C, H, W = inp.shape
         inp = self.check_image_size(inp)
 
-        # context
+        # context extraction
         context_vector = self.context_extractor(inp)  # [B, context_dim]
 
-        # encode
+        # encode with multi-level INR injection[web:99]
         x = self.intro(inp)
         encs = []
-        flag_enc = 1
-        for encoder, down in zip(self.encoders, self.downs):
-            x = encoder(x)
+
+        for i, (encoder, down) in enumerate(zip(self.encoders, self.downs)):
+            # 编码器块处理（内部包含INR注入）
+            x = encoder(x, context_vector)  # [B, C, H, W]
             encs.append(x)
-            x = down(x)
-            if flag_enc == 1:
-                feature1 = x
-            if flag_enc == 3:
-                feature2 = x
-            flag_enc += 1
+            x = down(x)  # 下采样
 
-        # middle（每个 MiddleBlockWithInjection 自己决定是否注入，无需额外再次注入）
-        for m in self.middle_blks:
-            x = m(x, context_vector)
-        feature3 = x
+        # middle processing (无INR注入)[web:94]
+        for middle_blk in self.middle_blks:
+            x = middle_blk(x)
 
-        # decode
-        flag_dec = 1
-        for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
+        # decode with multi-level INR injection[web:101]
+        for i, (decoder, up, enc_skip) in enumerate(zip(self.decoders, self.ups, encs[::-1])):
+            # 上采样 + skip connection
             x = up(x)
             x = x + enc_skip
-            x = decoder(x)
-            if flag_dec == 2:
-                feature4 = x
-            if flag_dec == 4:
-                feature5 = x
-            flag_dec += 1
 
+            # 解码器块处理（内部包含INR注入）
+            x = decoder(x, context_vector)  # [B, C, H, W]
+
+        # final output
         x = self.ending(x)
         x = x + inp
         x = x[:, :, :H, :W]
 
         return {
-            'output': x,
-            'feature1': feature1,
-            'feature2': feature2,
-            'feature3': feature3,
-            'feature4': feature4,
-            'feature5': feature5
+            'output': x
         }
 
     def check_image_size(self, x):
@@ -518,31 +589,31 @@ class NAF_Baseline_INR(nn.Module):
         return F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
 
 
-if __name__ == '__main__':
-    img_channel = 3
-    width = 16
+if __name__ == "__main__":
+    # 创建多层级INR注入的模型
+    model = NAF_Baseline_INR(
+        img_channel=3,
+        width=32,
+        middle_blk_num=4,
+        enc_blk_nums=[1, 1, 1, 28],  # 4个编码器层级
+        dec_blk_nums=[1, 1, 1, 1],   # 4个解码器层级
+        inr_d=64,
+        context_dim=256,
+        degradation_types=20,
+        injection_type='channel_modulation',
+        inject_encoder=True,    # 编码器注入
+        inject_decoder=True     # 解码器注入
+    )
 
-    dw_expand = 1
-    ffn_expand = 2
+    # 测试
+    test_input = torch.randn(1, 3, 256, 256)
+    output = model(test_input)
+    print(f"Output shape: {output['output'].shape}")
 
-    enc_blks = [1, 1, 1, 28]
-    middle_blk_num = 4
-    dec_blks = [1, 1, 1, 1]
+    # 计算参数量（以M为单位显示）
+    total_params = sum(p.numel() for p in model.parameters())
+    total_params_M = total_params / 1_000_000
+    print(f"Total parameters: {total_params_M:.2f}M")
 
-    net = NAF_Baseline_INR(img_channel=img_channel, width=width, middle_blk_num=middle_blk_num,
-                           enc_blk_nums=enc_blks, dec_blk_nums=dec_blks, dw_expand=dw_expand, ffn_expand=ffn_expand, inr_d=64, context_dim=256, degradation_types=20)
-
-    inp_shape = (3, 256, 256)
-
-    # 使用 thop
-    from thop import profile
-    import torch
-
-    input_tensor = torch.randn(1, *inp_shape)
-    macs, params = profile(net, inputs=(input_tensor,), verbose=False)
-
-    # 转换为百万级单位
-    macs = macs / 1e6  # 转为 MMacs
-    params = params / 1e6  # 转为 M params
-
-    print(f"MACs: {macs:.2f}M, Params: {params:.2f}M")
+    # 如果需要详细信息，也可以这样显示
+    # print(f"Total parameters: {total_params:,} ({total_params_M:.2f}M)")
