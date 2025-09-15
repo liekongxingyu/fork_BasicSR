@@ -1,5 +1,5 @@
 
-name: INRNet-All-width16-01-debug
+name: INRNet-All-width16-01
 model_type: NAFNetModel
 scale: 1
 num_gpu: 1

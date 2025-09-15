@@ -5,6 +5,7 @@ from basicsr.utils.registry import ARCH_REGISTRY
 
 from basicsr.archs.NAFNet_util import ContextExtractor, DegradationINR, LayerNorm2d
 
+
 class AvgPool2d(nn.Module):
     def __init__(self, kernel_size=None, base_size=None, auto_pad=True, fast_imp=False, train_size=None):
         super().__init__()
@@ -30,8 +31,10 @@ class AvgPool2d(nn.Module):
             if isinstance(self.base_size, int):
                 self.base_size = (self.base_size, self.base_size)
             self.kernel_size = list(self.base_size)
-            self.kernel_size[0] = x.shape[2] * self.base_size[0] // train_size[-2]
-            self.kernel_size[1] = x.shape[3] * self.base_size[1] // train_size[-1]
+            self.kernel_size[0] = x.shape[2] * \
+                self.base_size[0] // train_size[-2]
+            self.kernel_size[1] = x.shape[3] * \
+                self.base_size[1] // train_size[-1]
 
             # only used for fast implementation
             self.max_r1 = max(1, self.rs[0] * x.shape[2] // train_size[-2])
@@ -52,15 +55,20 @@ class AvgPool2d(nn.Module):
                 r2 = min(self.max_r2, r2)
                 s = x[:, :, ::r1, ::r2].cumsum(dim=-1).cumsum(dim=-2)
                 n, c, h, w = s.shape
-                k1, k2 = min(h - 1, self.kernel_size[0] // r1), min(w - 1, self.kernel_size[1] // r2)
-                out = (s[:, :, :-k1, :-k2] - s[:, :, :-k1, k2:] - s[:, :, k1:, :-k2] + s[:, :, k1:, k2:]) / (k1 * k2)
-                out = torch.nn.functional.interpolate(out, scale_factor=(r1, r2))
+                k1, k2 = min(
+                    h - 1, self.kernel_size[0] // r1), min(w - 1, self.kernel_size[1] // r2)
+                out = (s[:, :, :-k1, :-k2] - s[:, :, :-k1, k2:] -
+                       s[:, :, k1:, :-k2] + s[:, :, k1:, k2:]) / (k1 * k2)
+                out = torch.nn.functional.interpolate(
+                    out, scale_factor=(r1, r2))
         else:
             n, c, h, w = x.shape
             s = x.cumsum(dim=-1).cumsum_(dim=-2)
-            s = torch.nn.functional.pad(s, (1, 0, 1, 0))  # pad 0 for convenience
+            s = torch.nn.functional.pad(
+                s, (1, 0, 1, 0))  # pad 0 for convenience
             k1, k2 = min(h, self.kernel_size[0]), min(w, self.kernel_size[1])
-            s1, s2, s3, s4 = s[:, :, :-k1, :-k2], s[:, :, :-k1, k2:], s[:, :, k1:, :-k2], s[:, :, k1:, k2:]
+            s1, s2, s3, s4 = s[:, :, :-k1, :-k2], s[:, :, :-
+                                                    k1, k2:], s[:, :, k1:, :-k2], s[:, :, k1:, k2:]
             out = s4 + s1 - s2 - s3
             out = out / (k1 * k2)
 
@@ -68,21 +76,25 @@ class AvgPool2d(nn.Module):
             n, c, h, w = x.shape
             _h, _w = out.shape[2:]
             # print(x.shape, self.kernel_size)
-            pad2d = ((w - _w) // 2, (w - _w + 1) // 2, (h - _h) // 2, (h - _h + 1) // 2)
+            pad2d = ((w - _w) // 2, (w - _w + 1) // 2,
+                     (h - _h) // 2, (h - _h + 1) // 2)
             out = torch.nn.functional.pad(out, pad2d, mode='replicate')
 
         return out
 
+
 def replace_layers(model, base_size, train_size, fast_imp, **kwargs):
     for n, m in model.named_children():
         if len(list(m.children())) > 0:
-            ## compound module, go inside it
+            # compound module, go inside it
             replace_layers(m, base_size, train_size, fast_imp, **kwargs)
 
         if isinstance(m, nn.AdaptiveAvgPool2d):
-            pool = AvgPool2d(base_size=base_size, fast_imp=fast_imp, train_size=train_size)
+            pool = AvgPool2d(base_size=base_size,
+                             fast_imp=fast_imp, train_size=train_size)
             assert m.output_size == 1
             setattr(model, n, pool)
+
 
 class Local_Base():
     def convert(self, *args, train_size, **kwargs):
@@ -96,11 +108,13 @@ class BaselineBlock(nn.Module):
     def __init__(self, c, DW_Expand=1, FFN_Expand=2, drop_out_rate=0.):
         super().__init__()
         dw_channel = c * DW_Expand
-        self.conv1 = nn.Conv2d(in_channels=c, out_channels=dw_channel, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
+        self.conv1 = nn.Conv2d(in_channels=c, out_channels=dw_channel,
+                               kernel_size=1, padding=0, stride=1, groups=1, bias=True)
         self.conv2 = nn.Conv2d(in_channels=dw_channel, out_channels=dw_channel, kernel_size=3, padding=1, stride=1, groups=dw_channel,
                                bias=True)
-        self.conv3 = nn.Conv2d(in_channels=dw_channel, out_channels=c, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
-        
+        self.conv3 = nn.Conv2d(in_channels=dw_channel, out_channels=c,
+                               kernel_size=1, padding=0, stride=1, groups=1, bias=True)
+
         # Channel Attention
         self.se = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
@@ -116,17 +130,22 @@ class BaselineBlock(nn.Module):
         self.gelu = nn.GELU()
 
         ffn_channel = FFN_Expand * c
-        self.conv4 = nn.Conv2d(in_channels=c, out_channels=ffn_channel, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
-        self.conv5 = nn.Conv2d(in_channels=ffn_channel, out_channels=c, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
+        self.conv4 = nn.Conv2d(in_channels=c, out_channels=ffn_channel,
+                               kernel_size=1, padding=0, stride=1, groups=1, bias=True)
+        self.conv5 = nn.Conv2d(in_channels=ffn_channel, out_channels=c,
+                               kernel_size=1, padding=0, stride=1, groups=1, bias=True)
 
         self.norm1 = LayerNorm2d(c)
         self.norm2 = LayerNorm2d(c)
 
-        self.dropout1 = nn.Dropout(drop_out_rate) if drop_out_rate > 0. else nn.Identity()
-        self.dropout2 = nn.Dropout(drop_out_rate) if drop_out_rate > 0. else nn.Identity()
+        self.dropout1 = nn.Dropout(
+            drop_out_rate) if drop_out_rate > 0. else nn.Identity()
+        self.dropout2 = nn.Dropout(
+            drop_out_rate) if drop_out_rate > 0. else nn.Identity()
 
         self.beta = nn.Parameter(torch.zeros((1, c, 1, 1)), requires_grad=True)
-        self.gamma = nn.Parameter(torch.zeros((1, c, 1, 1)), requires_grad=True)
+        self.gamma = nn.Parameter(torch.zeros(
+            (1, c, 1, 1)), requires_grad=True)
 
     def forward(self, inp):
         x = inp
@@ -151,6 +170,7 @@ class BaselineBlock(nn.Module):
 
         return y + x * self.gamma
 
+
 @ARCH_REGISTRY.register()
 class NAF_Baseline(nn.Module):
 
@@ -158,9 +178,9 @@ class NAF_Baseline(nn.Module):
         super().__init__()
 
         self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1,
-                              bias=True)
+                               bias=True)
         self.ending = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1,
-                              bias=True)
+                                bias=True)
 
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
@@ -201,8 +221,6 @@ class NAF_Baseline(nn.Module):
 
         self.padder_size = 2 ** len(self.encoders)
 
-
-
     def forward(self, inp):
         B, C, H, W = inp.shape
         inp = self.check_image_size(inp)
@@ -223,8 +241,6 @@ class NAF_Baseline(nn.Module):
                 feature2 = x
 
             flag_enc += 1
-            
-            
 
         x = self.middle_blks(x)
 
@@ -259,10 +275,13 @@ class NAF_Baseline(nn.Module):
 
     def check_image_size(self, x):
         _, _, h, w = x.size()
-        mod_pad_h = (self.padder_size - h % self.padder_size) % self.padder_size
-        mod_pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
+        mod_pad_h = (self.padder_size - h %
+                     self.padder_size) % self.padder_size
+        mod_pad_w = (self.padder_size - w %
+                     self.padder_size) % self.padder_size
         x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
         return x
+
 
 class BaselineLocal(Local_Base, NAF_Baseline):
     def __init__(self, *args, train_size=(1, 3, 256, 256), fast_imp=False, **kwargs):
@@ -274,7 +293,8 @@ class BaselineLocal(Local_Base, NAF_Baseline):
 
         self.eval()
         with torch.no_grad():
-            self.convert(base_size=base_size, train_size=train_size, fast_imp=fast_imp)
+            self.convert(base_size=base_size,
+                         train_size=train_size, fast_imp=fast_imp)
 
 
 class MiddleBlockWithInjection(nn.Module):
@@ -282,12 +302,14 @@ class MiddleBlockWithInjection(nn.Module):
     由若干 BaselineBlock 组成的中间块；在每个子块之后执行一次退化注意力注入（若提供 inr 与 injector）。
     去掉了 indices/pos 等可选参数，固定交替策略：Block -> 注入 -> Block -> 注入 ...
     """
+
     def __init__(self, chan, num_blocks, dw_expand, ffn_expand,
                  injector: nn.Module | None,   # DegradationInjector 或 None
                  inr: nn.Module | None):        # DegradationINR 或 None
         super().__init__()
         assert num_blocks >= 1
-        self.blocks = nn.ModuleList([BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num_blocks)])
+        self.blocks = nn.ModuleList(
+            [BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num_blocks)])
         self.injector = injector
         self.inr = inr
         self.chan = chan
@@ -315,6 +337,7 @@ class DegradationInjector(nn.Module):
       - 'spatial_attention'  ：空间注意力
       - 'feature_fusion'     ：特征拼接融合
     """
+
     def __init__(self, inr_d: int, target_channels: int, injection_type: str = 'channel_modulation'):
         super().__init__()
         self.injection_type = injection_type
@@ -325,22 +348,27 @@ class DegradationInjector(nn.Module):
             # 全局池化 + 1x1 映射到目标通道，Sigmoid 得到逐通道权重
             self.adapter = nn.Sequential(
                 nn.AdaptiveAvgPool2d(1),
-                nn.Conv2d(inr_d, target_channels, kernel_size=1, stride=1, padding=0, bias=True),
+                nn.Conv2d(inr_d, target_channels, kernel_size=1,
+                          stride=1, padding=0, bias=True),
                 nn.Sigmoid()
             )
         elif injection_type == 'spatial_attention':
             # 3x3 提取空间线索到1通道，Sigmoid 得到逐像素权重
             mid = max(target_channels // 4, 8)
             self.adapter = nn.Sequential(
-                nn.Conv2d(inr_d, mid, kernel_size=3, stride=1, padding=1, bias=True),
+                nn.Conv2d(inr_d, mid, kernel_size=3,
+                          stride=1, padding=1, bias=True),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(mid, 1, kernel_size=1, stride=1, padding=0, bias=True),
+                nn.Conv2d(mid, 1, kernel_size=1,
+                          stride=1, padding=0, bias=True),
                 nn.Sigmoid()
             )
         elif injection_type == 'feature_fusion':
             # 先把退化图映射到 C 通道，再与 X 拼接，用 1x1 融合回 C
-            self.map_to_c = nn.Conv2d(inr_d, target_channels, kernel_size=1, stride=1, padding=0, bias=True)
-            self.fuse = nn.Conv2d(target_channels * 2, target_channels, kernel_size=1, stride=1, padding=0, bias=True)
+            self.map_to_c = nn.Conv2d(
+                inr_d, target_channels, kernel_size=1, stride=1, padding=0, bias=True)
+            self.fuse = nn.Conv2d(target_channels * 2, target_channels,
+                                  kernel_size=1, stride=1, padding=0, bias=True)
         else:
             raise ValueError(f'Unsupported injection_type: {injection_type}')
 
@@ -351,12 +379,10 @@ class DegradationInjector(nn.Module):
         return: [B, C, H, W]
         """
 
-
         if self.injection_type == 'channel_modulation':
             w = self.adapter(degradation_map)            # [B, C, 1, 1]
             return features * w + features
-        
-        
+
         elif self.injection_type == 'spatial_attention':
             a = self.adapter(degradation_map)            # [B, 1, H, W]
             return features * a
@@ -385,7 +411,8 @@ class NAF_Baseline_INR(nn.Module):
         chan = width
         for num in enc_blk_nums:
             self.encoders.append(
-                nn.Sequential(*[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)])
+                nn.Sequential(
+                    *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)])
             )
             self.downs.append(nn.Conv2d(chan, 2*chan, 2, 2))
             chan *= 2
@@ -395,7 +422,8 @@ class NAF_Baseline_INR(nn.Module):
 
         # degradation components
         self.context_extractor = ContextExtractor(context_dim)
-        self.degradation_inr = DegradationINR(d=inr_d, context_dim=context_dim, num_degradation_types=degradation_types)
+        self.degradation_inr = DegradationINR(
+            d=inr_d, context_dim=context_dim, num_degradation_types=degradation_types)
 
         # 注入器（注意：这是 DegradationInjector，不是 DegradationINR）
         self.middle_injector = DegradationInjector(
@@ -424,7 +452,8 @@ class NAF_Baseline_INR(nn.Module):
             ))
             chan //= 2
             self.decoders.append(
-                nn.Sequential(*[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)])
+                nn.Sequential(
+                    *[BaselineBlock(chan, dw_expand, ffn_expand) for _ in range(num)])
             )
 
         self.padder_size = 2 ** len(self.encoders)
@@ -482,8 +511,10 @@ class NAF_Baseline_INR(nn.Module):
 
     def check_image_size(self, x):
         _, _, h, w = x.size()
-        mod_pad_h = (self.padder_size - h % self.padder_size) % self.padder_size
-        mod_pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
+        mod_pad_h = (self.padder_size - h %
+                     self.padder_size) % self.padder_size
+        mod_pad_w = (self.padder_size - w %
+                     self.padder_size) % self.padder_size
         return F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
 
 
@@ -494,27 +525,24 @@ if __name__ == '__main__':
     dw_expand = 1
     ffn_expand = 2
 
-    # enc_blks = [2, 2, 4, 8]
-    # middle_blk_num = 12
-    # dec_blks = [2, 2, 2, 2]
-
     enc_blks = [1, 1, 1, 28]
-    middle_blk_num = 1
+    middle_blk_num = 4
     dec_blks = [1, 1, 1, 1]
 
-    net = NAF_Baseline(img_channel=img_channel, width=width, middle_blk_num=middle_blk_num,
-                 enc_blk_nums=enc_blks, dec_blk_nums=dec_blks, dw_expand=dw_expand, ffn_expand=ffn_expand)
+    net = NAF_Baseline_INR(img_channel=img_channel, width=width, middle_blk_num=middle_blk_num,
+                           enc_blk_nums=enc_blks, dec_blk_nums=dec_blks, dw_expand=dw_expand, ffn_expand=ffn_expand, inr_d=64, context_dim=256, degradation_types=20)
 
     inp_shape = (3, 256, 256)
 
-    from ptflops import get_model_complexity_info
+    # 使用 thop
+    from thop import profile
+    import torch
 
-    macs, params = get_model_complexity_info(net, inp_shape, verbose=False, print_per_layer_stat=False)
+    input_tensor = torch.randn(1, *inp_shape)
+    macs, params = profile(net, inputs=(input_tensor,), verbose=False)
 
-    params = float(params[:-3])
-    macs = float(macs[:-4])
+    # 转换为百万级单位
+    macs = macs / 1e6  # 转为 MMacs
+    params = params / 1e6  # 转为 M params
 
-    print(macs, params)
-
-
-
+    print(f"MACs: {macs:.2f}M, Params: {params:.2f}M")
