@@ -8,8 +8,8 @@ datasets:
   test:
     name: LowLightTraffic
     type: PairedImageDataset
-    dataroot_gt: ../Dataset/LowLightTraffic/Gt
-    dataroot_lq: ../Dataset/LowLightTraffic/Lq
+    dataroot_gt: ../Dataset/LowLightTrafficData/Gt
+    dataroot_lq: ../Dataset/LowLightTrafficData/Lq
     io_backend:
       type: disk
 
