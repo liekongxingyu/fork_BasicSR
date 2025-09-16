@@ -81,7 +81,7 @@ train:
 
 # validation settings
 val:
-  val_freq: !!float 500
+  val_freq: !!float 1000
   save_img: false
   save_vis: false  # 🆕 新增：是否保存频域分解的可视化结果
   save_vis_freq: ~  # 🆕 新增：频域分解可视化结果保存频率
@@ -100,8 +100,8 @@ val:
 
 # logging settings
 logger:
-  print_freq: 50
-  save_checkpoint_freq: !!float 1000
+  print_freq: 100
+  save_checkpoint_freq: !!float 2000
   use_tb_logger: true
   wandb:
     project: ~

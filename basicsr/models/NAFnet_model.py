@@ -232,29 +232,41 @@ class NAFNetModel(BaseModel):
         l_total = 0
         loss_dict = OrderedDict()
         
-        # pixel loss - 使用修复后的逻辑
+        # pixel loss
         if self.cri_pix:
             l_pix = 0.
-            for pred in preds_for_loss:  # 🔧 使用处理后的列表
+            for pred in preds_for_loss:
                 l_pix += self.cri_pix(pred, self.gt)
             
-            l_total += l_pix
-            loss_dict['l_pix'] = l_pix
+            # 平均化多个预测的损失
+            l_pix = l_pix / len(preds_for_loss)
+            
+            # 添加权重并累加到总损失
+            weighted_l_pix = self.opt.get('lambda_pix', 1.0) * l_pix
+            l_total += weighted_l_pix
+            loss_dict['l_pix'] = l_pix  # 记录原始损失值
 
-        # perceptual loss - 使用self.sr确保一致性
+        # perceptual loss
         if self.cri_perceptual:
-            l_percep, l_style = self.cri_perceptual(self.sr, self.gt)  # 🔧 使用self.sr
+            l_percep, l_style = self.cri_perceptual(self.sr, self.gt)
             
             if l_percep is not None:
-                l_total += l_percep
+                weighted_l_percep = self.opt.get('lambda_percep', 1.0) * l_percep
+                l_total += weighted_l_percep
                 loss_dict['l_percep'] = l_percep
+                
             if l_style is not None:
-                l_total += l_style
+                weighted_l_style = self.opt.get('lambda_style', 1.0) * l_style
+                l_total += weighted_l_style
                 loss_dict['l_style'] = l_style
 
-        l_total = l_total + 0. * sum(p.sum() for p in self.net_g.parameters())
+        # 添加总损失记录
+        loss_dict['l_total'] = l_total
 
+        # 反向传播
         l_total.backward()
+
+
         use_grad_clip = self.opt['train'].get('use_grad_clip', True)
         if use_grad_clip:
             torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), 0.01)

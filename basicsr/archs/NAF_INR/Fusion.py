@@ -2,273 +2,305 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class LowRankFusion(nn.Module):
-    def __init__(self, degradation_dim, feature_dim, rank=8):
+    def __init__(self, degradation_dim, feature_dim, rank=8, use_spatial_attention=True, 
+                 use_channel_attention=True, use_cross_attention=True):
         """
-        三张量低秩融合模块
-        Args:
-            degradation_dim (int): 退化向量维度 D
-            feature_dim (int): 特征向量维度 C  
-            rank (int): 低秩分解的秩
+        增强的三张量低秩融合模块 - 集成多种注意力机制
         """
         super().__init__()
         self.D = degradation_dim
         self.C = feature_dim
         self.rank = rank
+        self.use_spatial_attention = use_spatial_attention
+        self.use_channel_attention = use_channel_attention
+        self.use_cross_attention = use_cross_attention
 
-        # 生成编码器分支的变换矩阵
+        # ===== 原有的低秩分解组件 =====
         self.mlp_U_e = nn.Linear(degradation_dim, feature_dim * rank)
         self.mlp_V_e = nn.Linear(degradation_dim, rank * feature_dim)
-
-        # 生成解码器分支的变换矩阵
         self.mlp_U_d = nn.Linear(degradation_dim, feature_dim * rank)
         self.mlp_V_d = nn.Linear(degradation_dim, rank * feature_dim)
 
-        # 学习融合权重的MLP
-        self.fusion_mlp = nn.Sequential(
-            nn.Linear(degradation_dim, 128),
+        # ===== 新增：空间注意力机制 =====
+        if self.use_spatial_attention:
+            self.spatial_attention = SpatialAttentionModule(
+                degradation_dim, feature_dim
+            )
+
+        # ===== 新增：通道注意力机制 =====
+        if self.use_channel_attention:
+            self.channel_attention = ChannelAttentionModule(
+                degradation_dim, feature_dim
+            )
+
+        # ===== 新增：编码器-解码器交叉注意力 =====
+        if self.use_cross_attention:
+            self.cross_attention = CrossAttentionModule(
+                degradation_dim, feature_dim, rank
+            )
+            # 交叉注意力特征投影（预定义避免运行时创建）
+            self.cross_proj = nn.Linear(rank, feature_dim)
+
+        # ===== 增强的融合权重学习 =====
+        fusion_input_dim = degradation_dim
+        if self.use_spatial_attention:
+            fusion_input_dim += 1  # 空间注意力贡献（标量统计）
+        if self.use_channel_attention:
+            fusion_input_dim += feature_dim  # 通道注意力贡献
+        if self.use_cross_attention:
+            fusion_input_dim += 1  # 交叉注意力贡献（标量统计）
+
+        self.enhanced_fusion_mlp = nn.Sequential(
+            nn.Linear(fusion_input_dim, 128),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Linear(64, 3)  # 输出α, β, γ三个权重
+            nn.Dropout(0.1),
+            nn.Linear(64, 4)  # α, β, γ, δ
         )
+
+        # ===== 特征增强模块 =====
+        self.feature_enhancer = FeatureEnhancementModule(feature_dim)
 
         # 权重初始化
         self._init_weights()
 
     def _init_weights(self):
-        """权重初始化"""
+        """改进的权重初始化"""
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Conv2d):
+                nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
     def forward(self, degradation, encoder_feat, decoder_feat):
         """
-        前向传播
-        Args:
-            degradation: (B, D, H, W) 退化信息
-            encoder_feat: (B, C, H, W) 编码器特征
-            decoder_feat: (B, C, H, W) 解码器特征
-        Returns:
-            result: (B, C, H, W) 融合后的特征
+        增强的前向传播 - 修复维度错误
         """
         B, D, H, W = degradation.shape
         B, C, H, W = encoder_feat.shape
 
         # 检查维度匹配
-        assert decoder_feat.shape == (
-            B, C, H, W), f"解码器特征维度不匹配: {decoder_feat.shape}"
+        assert decoder_feat.shape == (B, C, H, W), f"解码器特征维度不匹配: {decoder_feat.shape}"
 
-        # 展平所有张量到 (B*H*W, dim) 格式
+        # 展平所有张量
         deg_flat = degradation.permute(0, 2, 3, 1).contiguous().view(B*H*W, D)
-        enc_flat = encoder_feat.permute(
-            0, 2, 3, 1).contiguous().view(B*H*W, C, 1)
-        dec_flat = decoder_feat.permute(
-            0, 2, 3, 1).contiguous().view(B*H*W, C, 1)
+        enc_flat = encoder_feat.permute(0, 2, 3, 1).contiguous().view(B*H*W, C, 1)
+        dec_flat = decoder_feat.permute(0, 2, 3, 1).contiguous().view(B*H*W, C, 1)
 
-        # 生成编码器分支的变换矩阵
-        U_e_params = self.mlp_U_e(deg_flat)  # (B*H*W, C*rank)
-        V_e_params = self.mlp_V_e(deg_flat)  # (B*H*W, rank*C)
-
-        U_e = U_e_params.view(B*H*W, self.C, self.rank)     # (B*H*W, C, rank)
-        V_e = V_e_params.view(B*H*W, self.rank, self.C)     # (B*H*W, rank, C)
-
-        # 生成解码器分支的变换矩阵
-        U_d_params = self.mlp_U_d(deg_flat)  # (B*H*W, C*rank)
-        V_d_params = self.mlp_V_d(deg_flat)  # (B*H*W, rank*C)
-
-        U_d = U_d_params.view(B*H*W, self.C, self.rank)     # (B*H*W, C, rank)
-        V_d = V_d_params.view(B*H*W, self.rank, self.C)     # (B*H*W, rank, C)
-
-        # 编码器分支的低秩变换：y_e = U_e × (V_e × x_e)
-        z_e = torch.bmm(V_e, enc_flat)        # (B*H*W, rank, 1)
+        # ===== 1. 原有的低秩变换 =====
+        # 编码器分支变换
+        U_e = self.mlp_U_e(deg_flat).view(B*H*W, self.C, self.rank)
+        V_e = self.mlp_V_e(deg_flat).view(B*H*W, self.rank, self.C)
+        z_e = torch.bmm(V_e, enc_flat)
         y_e = torch.bmm(U_e, z_e).squeeze(-1)  # (B*H*W, C)
 
-        # 解码器分支的低秩变换：y_d = U_d × (V_d × x_d)
-        z_d = torch.bmm(V_d, dec_flat)        # (B*H*W, rank, 1)
+        # 解码器分支变换
+        U_d = self.mlp_U_d(deg_flat).view(B*H*W, self.C, self.rank)
+        V_d = self.mlp_V_d(deg_flat).view(B*H*W, self.rank, self.C)
+        z_d = torch.bmm(V_d, dec_flat)
         y_d = torch.bmm(U_d, z_d).squeeze(-1)  # (B*H*W, C)
 
-        # 学习融合权重
-        fusion_weights = self.fusion_mlp(deg_flat)              # (B*H*W, 3)
-        fusion_weights = F.softmax(fusion_weights, dim=-1)      # 归一化权重
+        # ===== 2. 应用注意力机制 =====
+        attention_features = []
 
-        α = fusion_weights[:, 0:1]  # (B*H*W, 1)
-        β = fusion_weights[:, 1:2]  # (B*H*W, 1)
-        γ = fusion_weights[:, 2:3]  # (B*H*W, 1)
+        # 空间注意力
+        if self.use_spatial_attention:
+            spatial_att = self.spatial_attention(degradation, encoder_feat, decoder_feat)  # (B, C, H, W)
+            spatial_att_flat = spatial_att.permute(0, 2, 3, 1).contiguous().view(B*H*W, C)
+            y_e_spatial = y_e * spatial_att_flat
+            y_d_spatial = y_d * spatial_att_flat
+            # 添加空间注意力的统计信息到融合特征
+            spatial_stat = spatial_att_flat.mean(dim=1, keepdim=True)  # (B*H*W, 1)
+            attention_features.append(spatial_stat)
+        else:
+            y_e_spatial, y_d_spatial = y_e, y_d
 
-        # 最终融合：y = α × y_e + β × y_d + γ × (y_e ⊙ y_d)
-        result = α * y_e + β * y_d + γ * (y_e * y_d)  # (B*H*W, C)
+        # 通道注意力 - 修复维度错误
+        if self.use_channel_attention:
+            channel_att = self.channel_attention(degradation, encoder_feat, decoder_feat)  # (B, C, 1, 1)
+            # 正确的维度处理
+            channel_att_expanded = channel_att.squeeze(-1).squeeze(-1)  # (B, C)
+            channel_att_flat = channel_att_expanded.unsqueeze(1).repeat(1, H*W, 1).view(B*H*W, C)  # (B*H*W, C)
+            
+            y_e_channel = y_e_spatial * channel_att_flat
+            y_d_channel = y_d_spatial * channel_att_flat
+            # 添加通道注意力特征
+            attention_features.append(channel_att_expanded.repeat_interleave(H*W, dim=0))  # (B*H*W, C)
+        else:
+            y_e_channel, y_d_channel = y_e_spatial, y_d_spatial
 
-        # 重塑回原始特征图形状
-        result = result.view(B, H, W, self.C).permute(
-            0, 3, 1, 2)  # (B, C, H, W)
+        # 交叉注意力
+        cross_att_feat = None
+        if self.use_cross_attention:
+            cross_att_feat = self.cross_attention(degradation, encoder_feat, decoder_feat)  # (B, rank, H, W)
+            cross_att_flat = cross_att_feat.permute(0, 2, 3, 1).contiguous().view(B*H*W, self.rank)
+            # 添加交叉注意力的统计信息
+            cross_stat = cross_att_flat.mean(dim=1, keepdim=True)  # (B*H*W, 1)
+            attention_features.append(cross_stat)
 
-        return result
+        # ===== 3. 增强的融合权重学习 =====
+        fusion_input = [deg_flat]
+        fusion_input.extend(attention_features)
+        fusion_input_concat = torch.cat(fusion_input, dim=-1)
 
-# 修复后的测试函数
+        fusion_weights = self.enhanced_fusion_mlp(fusion_input_concat)
+        fusion_weights = F.softmax(fusion_weights, dim=-1)
+
+        α = fusion_weights[:, 0:1]  # 编码器权重
+        β = fusion_weights[:, 1:2]  # 解码器权重  
+        γ = fusion_weights[:, 2:3]  # 交互权重
+        δ = fusion_weights[:, 3:4]  # 注意力权重
+
+        # ===== 4. 多层次融合 =====
+        # 基础融合
+        basic_fusion = α * y_e_channel + β * y_d_channel + γ * (y_e_channel * y_d_channel)
+
+        # 如果有交叉注意力，加入其贡献
+        if cross_att_feat is not None:
+            cross_contribution = self.cross_proj(cross_att_flat)  # (B*H*W, C)
+            final_fusion = basic_fusion + δ * cross_contribution
+        else:
+            final_fusion = basic_fusion
+
+        # ===== 5. 特征增强 =====
+        result = final_fusion.view(B, H, W, self.C).permute(0, 3, 1, 2)
+        enhanced_result = self.feature_enhancer(result)
+
+        return enhanced_result
 
 
-def test_triple_fusion():
-    """测试函数"""
-    # 设置参数
-    B, D, C, H, W = 2, 16, 64, 32, 32
-    rank = 8
+class SpatialAttentionModule(nn.Module):
+    """空间注意力模块"""
+    def __init__(self, degradation_dim, feature_dim):
+        super().__init__()
+        self.conv1 = nn.Conv2d(degradation_dim + feature_dim * 2, 64, 3, padding=1)
+        self.conv2 = nn.Conv2d(64, 32, 3, padding=1)
+        self.conv3 = nn.Conv2d(32, feature_dim, 1)
+        
+    def forward(self, degradation, encoder_feat, decoder_feat):
+        # 拼接输入特征
+        combined = torch.cat([degradation, encoder_feat, decoder_feat], dim=1)
+        
+        # 生成空间注意力权重
+        x = F.relu(self.conv1(combined))
+        x = F.relu(self.conv2(x))
+        attention = torch.sigmoid(self.conv3(x))
+        
+        return attention
 
-    # 创建模块
-    fusion_module = LowRankFusion(
-        degradation_dim=D,
-        feature_dim=C,
-        rank=rank
+
+class ChannelAttentionModule(nn.Module):
+    """通道注意力模块 - 修复维度计算"""
+    def __init__(self, degradation_dim, feature_dim):
+        super().__init__()
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        # 修复输入维度计算
+        input_dim = degradation_dim + feature_dim * 2
+        self.fc1 = nn.Linear(input_dim, max(input_dim // 4, 16))  # 确保最小维度
+        self.fc2 = nn.Linear(max(input_dim // 4, 16), feature_dim)
+        
+    def forward(self, degradation, encoder_feat, decoder_feat):
+        B = encoder_feat.shape[0]
+        
+        # 全局平均池化
+        deg_pool = self.global_pool(degradation).view(B, -1)
+        enc_pool = self.global_pool(encoder_feat).view(B, -1) 
+        dec_pool = self.global_pool(decoder_feat).view(B, -1)
+        
+        # 拼接并生成通道注意力
+        combined = torch.cat([deg_pool, enc_pool, dec_pool], dim=1)
+        attention = torch.sigmoid(self.fc2(F.relu(self.fc1(combined))))
+        
+        return attention.unsqueeze(-1).unsqueeze(-1)  # (B, C, 1, 1)
+
+
+class CrossAttentionModule(nn.Module):
+    """编码器-解码器交叉注意力模块"""
+    def __init__(self, degradation_dim, feature_dim, rank):
+        super().__init__()
+        self.rank = rank
+        self.query_proj = nn.Conv2d(feature_dim, rank, 1)
+        self.key_proj = nn.Conv2d(feature_dim, rank, 1)
+        self.value_proj = nn.Conv2d(feature_dim, rank, 1)
+        self.degradation_modulation = nn.Conv2d(degradation_dim, rank, 1)
+        
+    def forward(self, degradation, encoder_feat, decoder_feat):
+        B, C, H, W = encoder_feat.shape
+        
+        # 生成查询、键、值
+        q = self.query_proj(encoder_feat)  # (B, rank, H, W)
+        k = self.key_proj(decoder_feat)    # (B, rank, H, W)
+        v = self.value_proj(decoder_feat)  # (B, rank, H, W)
+        
+        # 退化调制
+        deg_mod = torch.sigmoid(self.degradation_modulation(degradation))
+        
+        # 计算注意力
+        attention = F.softmax((q * k).sum(dim=1, keepdim=True) / (self.rank ** 0.5), dim=-1)
+        attended_value = attention * v * deg_mod
+        
+        return attended_value
+
+
+class FeatureEnhancementModule(nn.Module):
+    """特征增强模块"""
+    def __init__(self, feature_dim):
+        super().__init__()
+        self.conv1 = nn.Conv2d(feature_dim, feature_dim, 3, padding=1)
+        self.conv2 = nn.Conv2d(feature_dim, feature_dim, 1)
+        self.norm = nn.LayerNorm([feature_dim])  # 使用LayerNorm避免batch维度问题
+        
+    def forward(self, x):
+        residual = x
+        B, C, H, W = x.shape
+        
+        # LayerNorm需要特殊处理
+        x_norm = x.permute(0, 2, 3, 1).contiguous()  # (B, H, W, C)
+        x_norm = self.norm(x_norm)
+        x_norm = x_norm.permute(0, 3, 1, 2).contiguous()  # (B, C, H, W)
+        
+        x = F.relu(self.conv1(x_norm))
+        x = self.conv2(x)
+        return x + residual  # 残差连接
+
+
+# 测试函数 - 修复
+def test_enhanced_fusion():
+    fusion = LowRankFusion(
+        degradation_dim=64,
+        feature_dim=128,
+        rank=8,
+        use_spatial_attention=True,
+        use_channel_attention=True,
+        use_cross_attention=True
     )
-
-    # 创建测试输入 - 注意：需要 requires_grad=True 以支持梯度计算
-    degradation = torch.randn(B, D, H, W, requires_grad=True)
-    encoder_feat = torch.randn(B, C, H, W, requires_grad=True)
-    decoder_feat = torch.randn(B, C, H, W, requires_grad=True)
-
-    print("输入形状:")
+    
+    # 创建测试输入
+    B, D, C, H, W = 2, 64, 128, 32, 32
+    degradation = torch.randn(B, D, H, W)
+    encoder_feat = torch.randn(B, C, H, W)
+    decoder_feat = torch.randn(B, C, H, W)
+    
+    print("测试输入维度:")
     print(f"  degradation: {degradation.shape}")
     print(f"  encoder_feat: {encoder_feat.shape}")
     print(f"  decoder_feat: {decoder_feat.shape}")
-
-    # 前向传播 - 移除 torch.no_grad()
-    result = fusion_module(degradation, encoder_feat, decoder_feat)
-
+    
+    # 前向传播
+    result = fusion(degradation, encoder_feat, decoder_feat)
+    
     print(f"\n输出形状: {result.shape}")
-    print(f"参数量: {sum(p.numel() for p in fusion_module.parameters()):,}")
-
-    # 测试梯度传播
-    loss = result.sum()
-    loss.backward()
-    print("梯度传播测试: 通过")
-
-    # 检查梯度是否正确计算
-    param_with_grad = 0
-    for name, param in fusion_module.named_parameters():
-        if param.grad is not None:
-            param_with_grad += 1
-        else:
-            print(f"警告: 参数 {name} 没有梯度")
-
-    print(
-        f"有梯度的参数数量: {param_with_grad}/{len(list(fusion_module.parameters()))}")
-
-    return fusion_module, result
-
-# 实际使用示例
-
-
-def example_usage():
-    """实际使用的示例"""
-    # 假设这些是从网络其他部分得到的特征
-    batch_size = 4
-    degradation_dim = 32
-    feature_dim = 128
-    height, width = 64, 64
-
-    # 创建融合模块
-    fusion = LowRankFusion(
-        degradation_dim=degradation_dim,
-        feature_dim=feature_dim,
-        rank=16
-    )
-
-    # 模拟网络中的实际数据流
-    degradation_info = torch.randn(batch_size, degradation_dim, height, width)
-    encoder_features = torch.randn(batch_size, feature_dim, height, width)
-    decoder_features = torch.randn(batch_size, feature_dim, height, width)
-
-    # 融合
-    fused_features = fusion(
-        degradation_info, encoder_features, decoder_features)
-
-    print(f"融合后特征形状: {fused_features.shape}")
-    return fused_features
-
-# 内存优化版本（适用于大尺寸图像）
-
-
-class MemoryEfficientTripleFusion(LowRankFusion):
-    def __init__(self, degradation_dim, feature_dim, rank=8, chunk_size=1024):
-        super().__init__(degradation_dim, feature_dim, rank)
-        self.chunk_size = chunk_size
-
-    def forward(self, degradation, encoder_feat, decoder_feat):
-        """内存优化的前向传播"""
-        B, D, H, W = degradation.shape
-        B, C, H, W = encoder_feat.shape
-        total_positions = H * W
-
-        # 展平输入
-        deg_flat = degradation.permute(0, 2, 3, 1).contiguous().view(B*H*W, D)
-        enc_flat = encoder_feat.permute(0, 2, 3, 1).contiguous().view(B*H*W, C)
-        dec_flat = decoder_feat.permute(0, 2, 3, 1).contiguous().view(B*H*W, C)
-
-        results = []
-
-        # 分块处理
-        for start_idx in range(0, B*H*W, self.chunk_size):
-            end_idx = min(start_idx + self.chunk_size, B*H*W)
-
-            # 当前块的数据
-            deg_chunk = deg_flat[start_idx:end_idx]      # (chunk_size, D)
-            # (chunk_size, C, 1)
-            enc_chunk = enc_flat[start_idx:end_idx].unsqueeze(-1)
-            # (chunk_size, C, 1)
-            dec_chunk = dec_flat[start_idx:end_idx].unsqueeze(-1)
-
-            # 处理当前块（与原始方法相同）
-            chunk_result = self._process_chunk(deg_chunk, enc_chunk, dec_chunk)
-            results.append(chunk_result)
-
-        # 合并结果
-        result = torch.cat(results, dim=0)  # (B*H*W, C)
-        result = result.view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
-
-        return result
-
-    def _process_chunk(self, deg_chunk, enc_chunk, dec_chunk):
-        """处理单个数据块"""
-        chunk_size = deg_chunk.shape[0]
-
-        # 生成变换矩阵
-        U_e = self.mlp_U_e(deg_chunk).view(chunk_size, self.C, self.rank)
-        V_e = self.mlp_V_e(deg_chunk).view(chunk_size, self.rank, self.C)
-        U_d = self.mlp_U_d(deg_chunk).view(chunk_size, self.C, self.rank)
-        V_d = self.mlp_V_d(deg_chunk).view(chunk_size, self.rank, self.C)
-
-        # 低秩变换
-        z_e = torch.bmm(V_e, enc_chunk)
-        y_e = torch.bmm(U_e, z_e).squeeze(-1)
-        z_d = torch.bmm(V_d, dec_chunk)
-        y_d = torch.bmm(U_d, z_d).squeeze(-1)
-
-        # 融合权重
-        fusion_weights = F.softmax(self.fusion_mlp(deg_chunk), dim=-1)
-        α, β, γ = fusion_weights[:, 0:1], fusion_weights[:,
-                                                         1:2], fusion_weights[:, 2:3]
-
-        # 融合
-        result = α * y_e + β * y_d + γ * (y_e * y_d)
-        return result
-
+    print(f"形状保持: {result.shape == encoder_feat.shape}")
+    print(f"参数量: {sum(p.numel() for p in fusion.parameters()):,}")
+    
+    return result
 
 if __name__ == "__main__":
-    print("=== 基本测试 ===")
-    try:
-        fusion_module, result = test_triple_fusion()
-        print("基本测试通过!")
-    except Exception as e:
-        print(f"基本测试失败: {e}")
-
-    print("\n=== 实际使用示例 ===")
-    try:
-        fused_result = example_usage()
-        print("实际使用示例通过!")
-    except Exception as e:
-        print(f"实际使用示例失败: {e}")
-
-    print("\n测试完成!")
+    test_enhanced_fusion()
