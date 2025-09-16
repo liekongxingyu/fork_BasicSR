@@ -50,7 +50,7 @@ network_g:
   ffn_expand: 2
   degradation_types: 20
   fusion_rank: 32
-  fushion_locations: [1, 2, 3]  
+  fusion_locations: [1, 2, 3]  
 # path
 path:
   pretrain_network_g: ~
