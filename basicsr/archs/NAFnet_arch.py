@@ -3,105 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from basicsr.utils.registry import ARCH_REGISTRY
 
-from basicsr.archs.NAFNet_util import ContextExtractor, DegradationINR, LayerNorm2d
-
-
-class AvgPool2d(nn.Module):
-    def __init__(self, kernel_size=None, base_size=None, auto_pad=True, fast_imp=False, train_size=None):
-        super().__init__()
-        self.kernel_size = kernel_size
-        self.base_size = base_size
-        self.auto_pad = auto_pad
-
-        # only used for fast implementation
-        self.fast_imp = fast_imp
-        self.rs = [5, 4, 3, 2, 1]
-        self.max_r1 = self.rs[0]
-        self.max_r2 = self.rs[0]
-        self.train_size = train_size
-
-    def extra_repr(self) -> str:
-        return 'kernel_size={}, base_size={}, stride={}, fast_imp={}'.format(
-            self.kernel_size, self.base_size, self.kernel_size, self.fast_imp
-        )
-
-    def forward(self, x):
-        if self.kernel_size is None and self.base_size:
-            train_size = self.train_size
-            if isinstance(self.base_size, int):
-                self.base_size = (self.base_size, self.base_size)
-            self.kernel_size = list(self.base_size)
-            self.kernel_size[0] = x.shape[2] * \
-                self.base_size[0] // train_size[-2]
-            self.kernel_size[1] = x.shape[3] * \
-                self.base_size[1] // train_size[-1]
-
-            # only used for fast implementation
-            self.max_r1 = max(1, self.rs[0] * x.shape[2] // train_size[-2])
-            self.max_r2 = max(1, self.rs[0] * x.shape[3] // train_size[-1])
-
-        if self.kernel_size[0] >= x.size(-2) and self.kernel_size[1] >= x.size(-1):
-            return F.adaptive_avg_pool2d(x, 1)
-
-        if self.fast_imp:  # Non-equivalent implementation but faster
-            h, w = x.shape[2:]
-            if self.kernel_size[0] >= h and self.kernel_size[1] >= w:
-                out = F.adaptive_avg_pool2d(x, 1)
-            else:
-                r1 = [r for r in self.rs if h % r == 0][0]
-                r2 = [r for r in self.rs if w % r == 0][0]
-                # reduction_constraint
-                r1 = min(self.max_r1, r1)
-                r2 = min(self.max_r2, r2)
-                s = x[:, :, ::r1, ::r2].cumsum(dim=-1).cumsum(dim=-2)
-                n, c, h, w = s.shape
-                k1, k2 = min(
-                    h - 1, self.kernel_size[0] // r1), min(w - 1, self.kernel_size[1] // r2)
-                out = (s[:, :, :-k1, :-k2] - s[:, :, :-k1, k2:] -
-                       s[:, :, k1:, :-k2] + s[:, :, k1:, k2:]) / (k1 * k2)
-                out = torch.nn.functional.interpolate(
-                    out, scale_factor=(r1, r2))
-        else:
-            n, c, h, w = x.shape
-            s = x.cumsum(dim=-1).cumsum_(dim=-2)
-            s = torch.nn.functional.pad(
-                s, (1, 0, 1, 0))  # pad 0 for convenience
-            k1, k2 = min(h, self.kernel_size[0]), min(w, self.kernel_size[1])
-            s1, s2, s3, s4 = s[:, :, :-k1, :-k2], s[:, :, :-
-                                                    k1, k2:], s[:, :, k1:, :-k2], s[:, :, k1:, k2:]
-            out = s4 + s1 - s2 - s3
-            out = out / (k1 * k2)
-
-        if self.auto_pad:
-            n, c, h, w = x.shape
-            _h, _w = out.shape[2:]
-            # print(x.shape, self.kernel_size)
-            pad2d = ((w - _w) // 2, (w - _w + 1) // 2,
-                     (h - _h) // 2, (h - _h + 1) // 2)
-            out = torch.nn.functional.pad(out, pad2d, mode='replicate')
-
-        return out
-
-
-def replace_layers(model, base_size, train_size, fast_imp, **kwargs):
-    for n, m in model.named_children():
-        if len(list(m.children())) > 0:
-            # compound module, go inside it
-            replace_layers(m, base_size, train_size, fast_imp, **kwargs)
-
-        if isinstance(m, nn.AdaptiveAvgPool2d):
-            pool = AvgPool2d(base_size=base_size,
-                             fast_imp=fast_imp, train_size=train_size)
-            assert m.output_size == 1
-            setattr(model, n, pool)
-
-
-class Local_Base():
-    def convert(self, *args, train_size, **kwargs):
-        replace_layers(self, *args, train_size=train_size, **kwargs)
-        imgs = torch.rand(train_size)
-        with torch.no_grad():
-            self.forward(imgs)
+from basicsr.archs.NAFNet_util import ContextExtractor, DegradationINR, LayerNorm2d, AvgPool2d, Local_Base
+from basicsr.archs.NAF_INR.Fusion import LowRankFusion
 
 
 class BaselineBlock(nn.Module):
@@ -441,16 +344,18 @@ class DegradationInjector(nn.Module):
 @ARCH_REGISTRY.register()
 class NAF_Baseline_INR(nn.Module):
     """
-    修改版的NAF_Baseline_INR：
-    - 移除middle block的INR注入
-    - 在编码器和解码器的每个层级都添加INR注入
+    增强版的NAF_Baseline_INR：
+    - 在编码器和解码器之间添加三张量低秩融合
+    - 利用退化信息引导编码器-解码器特征的自适应融合
     """
 
     def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[],
-                 dw_expand=1, ffn_expand=2, inr_d=128, context_dim=256, degradation_types=10,
+                 dw_expand=1, ffn_expand=2, inr_d=128, context_dim=256, degradation_types=20,
                  injection_type='channel_modulation',
-                 inject_encoder=True,    # 是否在编码器注入
-                 inject_decoder=True):   # 是否在解码器注入
+                 inject_encoder=True,
+                 inject_decoder=True,
+                 fusion_rank=8,           # 低秩融合的秩
+                 fusion_locations=[]):    # 在哪些层级进行融合 [0,1,2,...]
         super().__init__()
 
         # stem
@@ -460,17 +365,23 @@ class NAF_Baseline_INR(nn.Module):
         self.inject_encoder = inject_encoder
         self.inject_decoder = inject_decoder
         self.injection_type = injection_type
+        self.fusion_locations = fusion_locations
 
         # degradation components
         self.context_extractor = ContextExtractor(context_dim)
         self.degradation_inr = DegradationINR(
             d=inr_d, context_dim=context_dim, num_degradation_types=degradation_types)
 
-        # encoders with injection[web:99]
+        # encoders with injection
         self.encoders = nn.ModuleList()
         self.encoder_injectors = nn.ModuleList()
         self.downs = nn.ModuleList()
+
+        # 添加融合模块
+        self.fusion_modules = nn.ModuleDict()
+
         chan = width
+        channel_dims = [width]  # 记录每层的通道数
 
         for i, num in enumerate(enc_blk_nums):
             # 创建编码器注入器
@@ -480,7 +391,7 @@ class NAF_Baseline_INR(nn.Module):
                 injection_type=injection_type
             ) if inject_encoder else None
 
-            # 创建带注入的编码器块[web:94]
+            # 创建带注入的编码器块
             encoder_block = EncoderBlockWithInjection(
                 chan=chan,
                 num_blocks=num,
@@ -492,13 +403,24 @@ class NAF_Baseline_INR(nn.Module):
 
             self.encoders.append(encoder_block)
             self.encoder_injectors.append(encoder_injector)
+
+            # 如果当前层需要融合，创建融合模块
+            if i in fusion_locations:
+                fusion_module = LowRankFusion(
+                    degradation_dim=inr_d,
+                    feature_dim=chan,
+                    rank=fusion_rank
+                )
+                self.fusion_modules[f'fusion_enc_{i}'] = fusion_module
+
             self.downs.append(nn.Conv2d(chan, 2*chan, 2, 2))
             chan *= 2
+            channel_dims.append(chan)
 
-        # middle channels (去掉INR注入)
+        # middle channels
         self.middle_channels = chan
 
-        # middle blocks (简化为普通的BaselineBlock)[web:96]
+        # middle blocks
         self.middle_blks = nn.ModuleList([
             nn.Sequential(
                 *[BaselineBlock(self.middle_channels, dw_expand, ffn_expand)
@@ -506,7 +428,7 @@ class NAF_Baseline_INR(nn.Module):
             ) for _ in range(middle_blk_num)
         ])
 
-        # decoders with injection[web:101]
+        # decoders with injection and fusion
         self.decoders = nn.ModuleList()
         self.decoder_injectors = nn.ModuleList()
         self.ups = nn.ModuleList()
@@ -526,7 +448,7 @@ class NAF_Baseline_INR(nn.Module):
                 injection_type=injection_type
             ) if inject_decoder else None
 
-            # 创建带注入的解码器块[web:96]
+            # 创建带注入的解码器块
             decoder_block = DecoderBlockWithInjection(
                 chan=chan,
                 num_blocks=num,
@@ -539,37 +461,86 @@ class NAF_Baseline_INR(nn.Module):
             self.decoders.append(decoder_block)
             self.decoder_injectors.append(decoder_injector)
 
+            # 解码器层的融合（对应编码器层）
+            dec_level = len(enc_blk_nums) - 1 - i
+            if dec_level in fusion_locations:
+                fusion_module = LowRankFusion(
+                    degradation_dim=inr_d,
+                    feature_dim=chan,
+                    rank=fusion_rank
+                )
+                self.fusion_modules[f'fusion_dec_{i}'] = fusion_module
+
         self.padder_size = 2 ** len(self.encoders)
 
     def forward(self, inp):
         B, C, H, W = inp.shape
         inp = self.check_image_size(inp)
 
-        # context extraction
+        # context extraction and degradation generation
         context_vector = self.context_extractor(inp)  # [B, context_dim]
 
-        # encode with multi-level INR injection[web:99]
+        # 生成多尺度退化向量
+        degradation_vectors = {}
+
+        # encode with multi-level INR injection
         x = self.intro(inp)
         encs = []
+        current_h, current_w = x.shape[2], x.shape[3]
 
         for i, (encoder, down) in enumerate(zip(self.encoders, self.downs)):
-            # 编码器块处理（内部包含INR注入）
-            x = encoder(x, context_vector)  # [B, C, H, W]
-            encs.append(x)
-            x = down(x)  # 下采样
+            # 编码器块处理
+            x = encoder(x, context_vector)
 
-        # middle processing (无INR注入)[web:94]
+            # 如果需要在此层进行融合，生成对应尺度的退化向量
+            if i in self.fusion_locations:
+                degradation_vectors[f'enc_{i}'] = self.degradation_inr(
+                    context_vector, (current_h, current_w)
+                )  # [B, inr_d, H, W]
+
+            encs.append(x)
+            x = down(x)
+            current_h, current_w = current_h // 2, current_w // 2
+
+        # middle processing
         for middle_blk in self.middle_blks:
             x = middle_blk(x)
 
-        # decode with multi-level INR injection[web:101]
+        # decode with multi-level INR injection and fusion
         for i, (decoder, up, enc_skip) in enumerate(zip(self.decoders, self.ups, encs[::-1])):
-            # 上采样 + skip connection
+            # 上采样
             x = up(x)
-            x = x + enc_skip
+            current_h, current_w = current_h * 2, current_w * 2
 
-            # 解码器块处理（内部包含INR注入）
-            x = decoder(x, context_vector)  # [B, C, H, W]
+            # 检查是否需要在此层进行融合
+            dec_level = len(self.encoders) - 1 - i
+            fusion_key = f'fusion_dec_{i}'
+
+            if fusion_key in self.fusion_modules:
+                # 生成当前尺度的退化向量
+                if f'enc_{dec_level}' not in degradation_vectors:
+                    degradation_vectors[f'enc_{dec_level}'] = self.degradation_inr(
+                        context_vector, (current_h, current_w)
+                    )
+
+                degradation_vec = degradation_vectors[f'enc_{dec_level}']
+
+                # 三张量融合：退化向量 + 编码器特征 + 解码器特征
+                fused_features = self.fusion_modules[fusion_key](
+                    degradation_vec,  # [B, inr_d, H, W]
+                    enc_skip,         # [B, C, H, W] 编码器特征
+                    x                 # [B, C, H, W] 解码器特征
+                )
+
+                # 残差连接：使用融合结果增强skip connection
+                enhanced_skip = enc_skip + fused_features
+                x = x + enhanced_skip
+            else:
+                # 普通的skip connection
+                x = x + enc_skip
+
+            # 解码器块处理
+            x = decoder(x, context_vector)
 
         # final output
         x = self.ending(x)
@@ -577,7 +548,8 @@ class NAF_Baseline_INR(nn.Module):
         x = x[:, :, :H, :W]
 
         return {
-            'output': x
+            'output': x,
+            'degradation_vectors': degradation_vectors  # 可选：返回退化向量用于分析
         }
 
     def check_image_size(self, x):
@@ -602,7 +574,9 @@ if __name__ == "__main__":
         degradation_types=20,
         injection_type='channel_modulation',
         inject_encoder=True,    # 编码器注入
-        inject_decoder=True     # 解码器注入
+        inject_decoder=True,     # 解码器注入
+        fusion_rank=32,
+        fusion_locations=[1, 2, 3],  # 在编码器层1和3进行融合
     )
 
     # 测试
