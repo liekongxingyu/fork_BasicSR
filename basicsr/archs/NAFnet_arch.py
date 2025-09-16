@@ -355,7 +355,7 @@ class NAF_Baseline_INR(nn.Module):
                  inject_encoder=True,
                  inject_decoder=True,
                  fusion_rank=8,           # 低秩融合的秩
-                 fusion_locations=[]):    # 在哪些层级进行融合 [0,1,2,...]
+                 fusion_locations=[1,2,3]):    # 在哪些层级进行融合 [0,1,2,...]
         super().__init__()
 
         # stem

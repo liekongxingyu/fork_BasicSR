@@ -49,7 +49,7 @@ network_g:
   dw_expand: 1
   ffn_expand: 2
   degradation_types: 20
-  fushion_rank: 32
+  fusion_rank: 32
   fushion_locations: [1, 2, 3]  
 # path
 path:
