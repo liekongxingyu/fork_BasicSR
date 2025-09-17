@@ -1,5 +1,5 @@
 
-name: INRNet-All-width16-01
+name: INRNet-All-debug
 model_type: NAFNetModel
 scale: 1
 num_gpu: 1
@@ -25,7 +25,7 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 1
-    batch_size_per_gpu: 60
+    batch_size_per_gpu: 15
     dataset_enlarge_ratio: 100
     prefetch_mode: ~
 
@@ -39,15 +39,9 @@ datasets:
 
 
 network_g:
-  type: INRCA_Net
-  width: 16
-  enc_blk_nums: [1, 1, 1, 28]
-  middle_blk_num: 4
-  dec_blk_nums: [1, 1, 1, 1]
+  type: INRNet
   inr_d: 64
   context_dim: 256
-  dw_expand: 1
-  ffn_expand: 2
   degradation_types: 20
 # path
 path:
@@ -79,7 +73,7 @@ train:
 
 # validation settings
 val:
-  val_freq: !!float 500
+  val_freq: !!float 1000
   save_img: false
   save_vis: false  # 🆕 新增：是否保存频域分解的可视化结果
   save_vis_freq: ~  # 🆕 新增：频域分解可视化结果保存频率
@@ -98,8 +92,8 @@ val:
 
 # logging settings
 logger:
-  print_freq: 50
-  save_checkpoint_freq: !!float 1000
+  print_freq: 500
+  save_checkpoint_freq: !!float 2000
   use_tb_logger: true
   wandb:
     project: ~
