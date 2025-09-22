@@ -203,12 +203,13 @@ class BaselineLocal(Local_Base, NAF_Baseline):
 class EncoderBlockWithInjection(nn.Module):
     """
     编码器块，包含BaselineBlock + INR注入
-    在编码特征提取后、下采样前进行退化注入
+    支持在开始或结束时进行退化注入
     """
 
     def __init__(self, chan, num_blocks, dw_expand, ffn_expand,
                  injector: nn.Module | None,   # DegradationInjector 或 None
-                 inr: nn.Module | None):        # DegradationINR 或 None
+                 inr: nn.Module | None,        # DegradationINR 或 None
+                 inject_at_end: bool = False):  # 新增：控制注入时机
         super().__init__()
         assert num_blocks >= 1
 
@@ -220,18 +221,26 @@ class EncoderBlockWithInjection(nn.Module):
         self.injector = injector
         self.inr = inr
         self.chan = chan
+        self.inject_at_end = inject_at_end  # 存储注入时机
 
     def forward(self, x, context_vector):
         """
         x: [B, C, H, W]
         context_vector: [B, context_dim]
         """
-        # 1. 先进行基础特征提取
+        do_inject = (self.injector is not None) and (self.inr is not None)
+
+        # 1. 如果在开始注入（原来的方式）
+        if do_inject and not self.inject_at_end:
+            B, C, H, W = x.shape
+            deg_map = self.inr(context_vector, (H, W))   # [B, inr_d, H, W]
+            x = self.injector(x, deg_map)                # [B, C, H, W]
+
+        # 2. 进行基础特征提取（所有28个块）
         x = self.blocks(x)
 
-        # 2. 在下采样前进行INR退化注入[web:94]
-        do_inject = (self.injector is not None) and (self.inr is not None)
-        if do_inject:
+        # 3. 如果在结束时注入（新的方式）
+        if do_inject and self.inject_at_end:
             B, C, H, W = x.shape
             deg_map = self.inr(context_vector, (H, W))   # [B, inr_d, H, W]
             x = self.injector(x, deg_map)                # [B, C, H, W]
@@ -345,8 +354,8 @@ class DegradationInjector(nn.Module):
 class NAF_Baseline_INR(nn.Module):
     """
     增强版的NAF_Baseline_INR：
-    - 在编码器和解码器之间添加三张量低秩融合
-    - 利用退化信息引导编码器-解码器特征的自适应融合
+    - 在编码器和解码器之间添加四张量低秩融合
+    - 分别利用编码器和解码器的退化信息引导特征融合
     """
 
     def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[],
@@ -355,7 +364,7 @@ class NAF_Baseline_INR(nn.Module):
                  inject_encoder=True,
                  inject_decoder=True,
                  fusion_rank=8,           # 低秩融合的秩
-                 fusion_locations=[1,2,3]):    # 在哪些层级进行融合 [0,1,2,...]
+                 fusion_locations=[1, 2, 3]):    # 在哪些层级进行融合 [0,1,2,...]
         super().__init__()
 
         # stem
@@ -398,7 +407,8 @@ class NAF_Baseline_INR(nn.Module):
                 dw_expand=dw_expand,
                 ffn_expand=ffn_expand,
                 injector=encoder_injector,
-                inr=self.degradation_inr
+                inr=self.degradation_inr,
+                inject_at_end=True  # 设置在所有块处理完后再注入
             )
 
             self.encoders.append(encoder_block)
@@ -411,7 +421,7 @@ class NAF_Baseline_INR(nn.Module):
                     feature_dim=chan,
                     rank=fusion_rank
                 )
-                self.fusion_modules[f'fusion_enc_{i}'] = fusion_module
+                self.fusion_modules[f'fusion_{i}'] = fusion_module
 
             self.downs.append(nn.Conv2d(chan, 2*chan, 2, 2))
             chan *= 2
@@ -461,16 +471,6 @@ class NAF_Baseline_INR(nn.Module):
             self.decoders.append(decoder_block)
             self.decoder_injectors.append(decoder_injector)
 
-            # 解码器层的融合（对应编码器层）
-            dec_level = len(enc_blk_nums) - 1 - i
-            if dec_level in fusion_locations:
-                fusion_module = LowRankFusion(
-                    degradation_dim=inr_d,
-                    feature_dim=chan,
-                    rank=fusion_rank
-                )
-                self.fusion_modules[f'fusion_dec_{i}'] = fusion_module
-
         self.padder_size = 2 ** len(self.encoders)
 
     def forward(self, inp):
@@ -480,8 +480,9 @@ class NAF_Baseline_INR(nn.Module):
         # context extraction and degradation generation
         context_vector = self.context_extractor(inp)  # [B, context_dim]
 
-        # 生成多尺度退化向量
-        degradation_vectors = {}
+        # 存储编码器和解码器的退化向量
+        encoder_degradations = {}
+        decoder_degradations = {}
 
         # encode with multi-level INR injection
         x = self.intro(inp)
@@ -492,9 +493,9 @@ class NAF_Baseline_INR(nn.Module):
             # 编码器块处理
             x = encoder(x, context_vector)
 
-            # 如果需要在此层进行融合，生成对应尺度的退化向量
+            # 如果需要在此层进行融合，生成编码器退化向量
             if i in self.fusion_locations:
-                degradation_vectors[f'enc_{i}'] = self.degradation_inr(
+                encoder_degradations[i] = self.degradation_inr(
                     context_vector, (current_h, current_w)
                 )  # [B, inr_d, H, W]
 
@@ -513,28 +514,31 @@ class NAF_Baseline_INR(nn.Module):
             current_h, current_w = current_h * 2, current_w * 2
 
             # 检查是否需要在此层进行融合
-            dec_level = len(self.encoders) - 1 - i
-            fusion_key = f'fusion_dec_{i}'
+            enc_level = len(self.encoders) - 1 - i  # 对应的编码器层级
+            fusion_key = f'fusion_{enc_level}'
 
-            if fusion_key in self.fusion_modules:
-                # 生成当前尺度的退化向量
-                if f'enc_{dec_level}' not in degradation_vectors:
-                    degradation_vectors[f'enc_{dec_level}'] = self.degradation_inr(
-                        context_vector, (current_h, current_w)
-                    )
+            if fusion_key in self.fusion_modules and enc_level in self.fusion_locations:
+                # 生成解码器退化向量
+                decoder_degradations[i] = self.degradation_inr(
+                    context_vector, (current_h, current_w)
+                )  # [B, inr_d, H, W]
 
-                degradation_vec = degradation_vectors[f'enc_{dec_level}']
+                # 获取对应的编码器退化向量
+                # [B, inr_d, H, W]
+                encoder_deg = encoder_degradations[enc_level]
+                # [B, inr_d, H, W]
+                decoder_deg = decoder_degradations[i]
 
-                # 三张量融合：退化向量 + 编码器特征 + 解码器特征
+                # 四张量低秩融合：编码器特征 + 编码器退化 + 解码器特征 + 解码器退化
                 fused_features = self.fusion_modules[fusion_key](
-                    degradation_vec,  # [B, inr_d, H, W]
-                    enc_skip,         # [B, C, H, W] 编码器特征
-                    x                 # [B, C, H, W] 解码器特征
+                    enc_skip,      # [B, C, H, W] 编码器特征图
+                    encoder_deg,   # [B, inr_d, H, W] 编码器退化图
+                    x,             # [B, C, H, W] 解码器特征图
+                    decoder_deg    # [B, inr_d, H, W] 解码器退化图
                 )
 
-                # 残差连接：使用融合结果增强skip connection
-                enhanced_skip = enc_skip + fused_features
-                x = x + enhanced_skip
+                # 使用融合结果替换原来的skip connection
+                x = fused_features
             else:
                 # 普通的skip connection
                 x = x + enc_skip
@@ -549,7 +553,8 @@ class NAF_Baseline_INR(nn.Module):
 
         return {
             'output': x,
-            'degradation_vectors': degradation_vectors  # 可选：返回退化向量用于分析
+            'encoder_degradations': encoder_degradations,  # 编码器退化向量
+            'decoder_degradations': decoder_degradations   # 解码器退化向量
         }
 
     def check_image_size(self, x):
@@ -565,8 +570,8 @@ if __name__ == "__main__":
     # 创建多层级INR注入的模型
     model = NAF_Baseline_INR(
         img_channel=3,
-        width=32,
-        middle_blk_num=4,
+        width=64,
+        middle_blk_num=8,
         enc_blk_nums=[1, 1, 1, 28],  # 4个编码器层级
         dec_blk_nums=[1, 1, 1, 1],   # 4个解码器层级
         inr_d=64,
@@ -575,7 +580,7 @@ if __name__ == "__main__":
         injection_type='channel_modulation',
         inject_encoder=True,    # 编码器注入
         inject_decoder=True,     # 解码器注入
-        fusion_rank=32,
+        fusion_rank=16,
         fusion_locations=[1, 2, 3],  # 在编码器层1和3进行融合
     )
 

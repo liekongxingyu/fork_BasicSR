@@ -13,7 +13,7 @@
       "env": {
         "PYTHONPATH": "${workspaceFolder}" // 设置你的包路径
       },
-      "args": ["-opt", "options/train/NAFNet/INRNet_All.yml"],
+      "args": ["-opt", "options/train/NAFNet/NAF_INR_All.yml"],
     }
   ]
 }

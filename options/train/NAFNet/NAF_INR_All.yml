@@ -25,7 +25,7 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 1
-    batch_size_per_gpu: 30
+    batch_size_per_gpu: 10
     dataset_enlarge_ratio: 100
     prefetch_mode: ~
 
@@ -40,16 +40,16 @@ datasets:
 
 network_g:
   type: NAF_Baseline_INR
-  width: 32
+  width: 64
   enc_blk_nums: [1, 1, 1, 28]
-  middle_blk_num: 4
+  middle_blk_num: 8
   dec_blk_nums: [1, 1, 1, 1]
   inr_d: 64
   context_dim: 256
   dw_expand: 1
   ffn_expand: 2
   degradation_types: 20
-  fusion_rank: 32
+  fusion_rank: 16
   fusion_locations: [1, 2, 3]  
 # path
 path:
