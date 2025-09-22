@@ -2,8 +2,135 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class LowRankFusion(nn.Module):
+    def __init__(self, degradation_dim, feature_dim, rank=8):
+        """
+        双向低秩融合模块（稳定性优化版本）
+        Args:
+            degradation_dim (int): 退化向量维度 D
+            feature_dim (int): 特征向量维度 C  
+            rank (int): 低秩分解的秩 r
+        """
+        super().__init__()
+        self.D = degradation_dim
+        self.C = feature_dim
+        self.rank = rank
+
+        # 编码器退化图分解
+        self.encoder_U = nn.Linear(degradation_dim, rank * feature_dim)  # U_e: D -> r*C
+        self.encoder_V = nn.Linear(degradation_dim, feature_dim * rank)  # V_e: D -> C*r
+
+        # 解码器退化图分解  
+        self.decoder_U = nn.Linear(degradation_dim, rank * feature_dim)  # U_d: D -> r*C
+        self.decoder_V = nn.Linear(degradation_dim, feature_dim * rank)  # V_d: D -> C*r
+
+        # 稳定性优化：减小MLP复杂度，防止过拟合
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(degradation_dim * 2, 128),  # 减小隐层维度
+            nn.LayerNorm(128),  # 添加层归一化
+            nn.ReLU(),
+            nn.Dropout(0.1),    # 添加dropout防止过拟合
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 3)    # 输出α, β, γ三个权重
+        )
+
+        # 添加特征归一化层
+        self.enc_norm = nn.LayerNorm(feature_dim)
+        self.dec_norm = nn.LayerNorm(feature_dim)
+        self.result_norm = nn.LayerNorm(feature_dim)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        """保守的权重初始化，防止梯度爆炸"""
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Linear):
+                # 对低秩分解层使用更小的初始化
+                if 'encoder_U' in name or 'encoder_V' in name or 'decoder_U' in name or 'decoder_V' in name:
+                    nn.init.normal_(module.weight, mean=0.0, std=0.01)  # 非常保守的初始化
+                else:
+                    nn.init.normal_(module.weight, mean=0.0, std=0.02)  # 稍大一点但仍然保守
+                
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.LayerNorm):
+                nn.init.ones_(module.weight)
+                nn.init.zeros_(module.bias)
+
+    def forward(self, encoder_feat, encoder_deg, decoder_feat, decoder_deg):
+        """
+        前向传播（稳定性优化版本）
+        """
+        B, C, H, W = encoder_feat.shape
+        B, D, H, W = encoder_deg.shape
+
+        # 检查维度匹配
+        assert decoder_feat.shape == (B, C, H, W), f"解码器特征维度不匹配: {decoder_feat.shape}"
+        assert decoder_deg.shape == (B, D, H, W), f"解码器退化图维度不匹配: {decoder_deg.shape}"
+
+        # 展平到 (B*H*W, dim) 格式
+        enc_feat_flat = encoder_feat.permute(0, 2, 3, 1).contiguous().view(B*H*W, C)  # (BHW, C)
+        enc_deg_flat = encoder_deg.permute(0, 2, 3, 1).contiguous().view(B*H*W, D)   # (BHW, D)
+        dec_feat_flat = decoder_feat.permute(0, 2, 3, 1).contiguous().view(B*H*W, C) # (BHW, C)
+        dec_deg_flat = decoder_deg.permute(0, 2, 3, 1).contiguous().view(B*H*W, D)   # (BHW, D)
+
+        # 输入特征归一化，提高数值稳定性
+        enc_feat_flat = self.enc_norm(enc_feat_flat)
+        dec_feat_flat = self.dec_norm(dec_feat_flat)
+
+        # 编码器退化图低秩分解 + 数值裁剪
+        U_e_params = torch.clamp(self.encoder_U(enc_deg_flat), -5.0, 5.0)  # 裁剪防止爆炸
+        V_e_params = torch.clamp(self.encoder_V(enc_deg_flat), -5.0, 5.0)
+        
+        U_e = U_e_params.view(B*H*W, self.rank, self.C)      # (BHW, r, C)
+        V_e = V_e_params.view(B*H*W, self.C, self.rank)      # (BHW, C, r)
+
+        # 解码器退化图低秩分解 + 数值裁剪
+        U_d_params = torch.clamp(self.decoder_U(dec_deg_flat), -5.0, 5.0)
+        V_d_params = torch.clamp(self.decoder_V(dec_deg_flat), -5.0, 5.0)
+        
+        U_d = U_d_params.view(B*H*W, self.rank, self.C)      # (BHW, r, C)
+        V_d = V_d_params.view(B*H*W, self.C, self.rank)      # (BHW, C, r)
+
+        # 编码器分支：F_e' = U_e × V_e × F_e（添加数值稳定性保护）
+        enc_feat_expanded = enc_feat_flat.unsqueeze(-1)  # (BHW, C, 1)
+        temp_e = torch.clamp(torch.bmm(V_e.transpose(-2, -1), enc_feat_expanded), -10.0, 10.0)  # (BHW, r, 1)
+        transformed_enc = torch.clamp(torch.bmm(U_e.transpose(-2, -1), temp_e).squeeze(-1), -10.0, 10.0)  # (BHW, C)
+
+        # 解码器分支：F_d' = U_d × V_d × F_d（添加数值稳定性保护）
+        dec_feat_expanded = dec_feat_flat.unsqueeze(-1)  # (BHW, C, 1)
+        temp_d = torch.clamp(torch.bmm(V_d.transpose(-2, -1), dec_feat_expanded), -10.0, 10.0)  # (BHW, r, 1)
+        transformed_dec = torch.clamp(torch.bmm(U_d.transpose(-2, -1), temp_d).squeeze(-1), -10.0, 10.0)  # (BHW, C)
+
+        # 变换后特征归一化
+        transformed_enc = F.layer_norm(transformed_enc, [self.C])
+        transformed_dec = F.layer_norm(transformed_dec, [self.C])
+
+        # 自适应融合策略（添加输入裁剪）
+        combined_deg = torch.clamp(torch.cat([enc_deg_flat, dec_deg_flat], dim=-1), -5.0, 5.0)  # (BHW, 2*D)
+        fusion_weights = self.fusion_mlp(combined_deg)                  # (BHW, 3)
+        fusion_weights = F.softmax(fusion_weights, dim=-1)             # 归一化权重
+
+        α = fusion_weights[:, 0:1]  # (BHW, 1) - 编码器权重
+        β = fusion_weights[:, 1:2]  # (BHW, 1) - 解码器权重  
+        γ = fusion_weights[:, 2:3]  # (BHW, 1) - 交互权重
+
+        # 最终融合：使用更稳定的交互项
+        interaction_term = transformed_enc * transformed_dec  # 元素乘积比tanh(相加)更稳定
+        result = α * transformed_enc + β * transformed_dec + γ * interaction_term  # (BHW, C)
+
+        # 最终结果归一化和裁剪
+        result = self.result_norm(result)
+        result = torch.clamp(result, -10.0, 10.0)
+
+        # 重塑回原始特征图形状
+        result = result.view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
+
+        return result
+
     def __init__(self, degradation_dim, feature_dim, rank=8):
         """
         双向低秩融合模块
