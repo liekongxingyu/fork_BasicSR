@@ -95,5 +95,5 @@ def main(image_name):
 
 
 if __name__ == "__main__":
-    image_name = "1.jpg"  # 替换为你的图像文件名
+    image_name = "0047.png"  # 替换为你的图像文件名
     main(image_name)

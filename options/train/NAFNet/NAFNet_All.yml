@@ -9,8 +9,24 @@ datasets:
   train:
     name: All-In-One
     type: PairedImageDataset
-    dataroot_gt1: ../Dataset/All-In-One(train-only)/Gt
-    dataroot_lq1: ../Dataset/All-In-One(train-only)/Lq
+
+    dataroot_gt1: ../Dataset/FoggyCityscapes/Gt
+    dataroot_lq1: ../Dataset/FoggyCityscapes/Lq
+
+    dataroot_gt2: ../Dataset/LowLightTrafficData/Gt
+    dataroot_lq2: ../Dataset/LowLightTrafficData/Lq
+
+    dataroot_gt3: ../Dataset/RainCityscapes/Gt
+    dataroot_lq3: ../Dataset/RainCityscapes/Lq
+
+    dataroot_gt4: ../Dataset/RainDS-syn/Gt
+    dataroot_lq4: ../Dataset/RainDS-syn/Lq
+
+    dataroot_gt5: ../Dataset/RSCityscapes/Gt
+    dataroot_lq5: ../Dataset/RSCityscapes/Lq
+
+    dataroot_gt6: ../Dataset/SnowTrafficData/Gt
+    dataroot_lq6: ../Dataset/SnowTrafficData/Lq
 
     filename_tmpl: '{}'
     io_backend:
@@ -25,7 +41,7 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 1
-    batch_size_per_gpu: 60
+    batch_size_per_gpu: 30
     dataset_enlarge_ratio: 100
     prefetch_mode: ~
 
@@ -42,9 +58,9 @@ network_g:
   type: NAF_Baseline
   width: 64
   enc_blk_nums: [1, 1, 1, 28]
-  middle_blk_num: 8
+  middle_blk_num: 1
   dec_blk_nums: [1, 1, 1, 1]
-  dw_expand: 1
+  dw_expand: 2
   ffn_expand: 2
 # path
 path:
@@ -76,11 +92,11 @@ train:
 
 # validation settings
 val:
-  val_freq: !!float 500
+  val_freq: !!float 3000
   save_img: false
   save_vis: false  # 🆕 新增：是否保存频域分解的可视化结果
   save_vis_freq: ~  # 🆕 新增：频域分解可视化结果保存频率
-  max_val_num: 200  # 🆕 新增：最大验证图像数量
+  max_val_num: 2000  # 🆕 新增：最大验证图像数量
 
 
   metrics:
@@ -95,8 +111,8 @@ val:
 
 # logging settings
 logger:
-  print_freq: 50
-  save_checkpoint_freq: !!float 1000
+  print_freq: 500
+  save_checkpoint_freq: !!float 3000
   use_tb_logger: true
   wandb:
     project: ~
