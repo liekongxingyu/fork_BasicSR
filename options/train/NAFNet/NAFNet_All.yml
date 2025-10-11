@@ -41,15 +41,23 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 1
-    batch_size_per_gpu: 30
+    batch_size_per_gpu: 3
     dataset_enlarge_ratio: 100
     prefetch_mode: ~
 
-  val:
+  val_1:
     name: RSCityscapes
     type: PairedImageDataset
     dataroot_gt: ../Dataset/RSCityscapes/Gt
     dataroot_lq: ../Dataset/RSCityscapes/Lq
+    io_backend:
+      type: disk
+  
+  val_2:
+    name: LowLightTrafficData
+    type: PairedImageDataset
+    dataroot_gt: ../Dataset/SnowTrafficData/Gt
+    dataroot_lq: ../Dataset/SnowTrafficData/Lq
     io_backend:
       type: disk
 
