@@ -1,5 +1,5 @@
 
-name: NAFNet-All-width16-01
+name: NAFNet-All-width64-01
 model_type: NAFNetModel
 scale: 1
 num_gpu: 1
