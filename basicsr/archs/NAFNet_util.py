@@ -219,11 +219,30 @@ class DegradationINR(nn.Module):
         self.imnet = MLP(imnet_in_dim, d, hidden_list)
 
     def generate_degradation_type(self, context_vector):
-        # 直接返回 softmax 概率，维度 [B, deg_type_dim]
-        logits = self.degradation_predictor(context_vector)
-        probs = torch.softmax(logits, dim=-1)
-        return probs
+        """
+        用空间一致性机制生成退化类型分布（全局）。
+        最终输出仍为 [B, K]。
+        """
+        B = context_vector.shape[0]
+        K = self.deg_type_dim
 
+        # 1️⃣ context -> 粗尺度退化布局 [B, K, h0, w0]
+        coarse = self.deg_coarse_predictor(context_vector)
+        coarse = coarse.view(B, K, self.proto_h, self.proto_w)
+
+        # 2️⃣ depthwise conv 平滑，获得空间一致性
+        smoothed = self.smooth_conv(coarse)  # [B, K, h0, w0]
+
+        # 3️⃣ 全局汇聚（取平均或最大，也可以混合）
+        pooled = smoothed.mean(dim=[2, 3])  # [B, K]
+
+        # 4️⃣ softmax 归一化成概率分布
+        probs = torch.softmax(pooled, dim=-1)
+
+        return probs  # [B, K]
+
+    
+    
     def query_degradation_vector(self, input_size,coord, context_vector, cell=None):
         """
         Args:
