@@ -140,6 +140,7 @@ class Local_Base():
             self.forward(imgs)
 
 # Context提取器 - 应该独立使用
+# 建议加点频域啥的
 class ContextExtractor(nn.Module):
     def __init__(self, context_dim=256):
         super().__init__()
