@@ -16,13 +16,20 @@ class LowRankFusion(nn.Module):
         self.C = feature_dim
         self.rank = rank
 
-        # 编码器退化图分解
-        self.encoder_U = nn.Linear(degradation_dim, rank * feature_dim)  # U_e: D -> r*C
-        self.encoder_V = nn.Linear(degradation_dim, feature_dim * rank)  # V_e: D -> C*r
+        # 使用 1×1 卷积代替全连接层，保持逐像素线性映射
+        self.encoder_U = nn.Conv2d(degradation_dim, rank * feature_dim, kernel_size=1, stride=1, padding=0, bias=True)
+        self.encoder_V = nn.Conv2d(degradation_dim, feature_dim * rank, kernel_size=1, stride=1, padding=0, bias=True)
 
-        # 解码器退化图分解  
-        self.decoder_U = nn.Linear(degradation_dim, rank * feature_dim)  # U_d: D -> r*C
-        self.decoder_V = nn.Linear(degradation_dim, feature_dim * rank)  # V_d: D -> C*r
+        self.decoder_U = nn.Conv2d(degradation_dim, rank * feature_dim, kernel_size=1, stride=1, padding=0, bias=True)
+        self.decoder_V = nn.Conv2d(degradation_dim, feature_dim * rank, kernel_size=1, stride=1, padding=0, bias=True)
+
+        # # 编码器退化图分解
+        # self.encoder_U = nn.Linear(degradation_dim, rank * feature_dim)  # U_e: D -> r*C
+        # self.encoder_V = nn.Linear(degradation_dim, feature_dim * rank)  # V_e: D -> C*r
+
+        # # 解码器退化图分解  
+        # self.decoder_U = nn.Linear(degradation_dim, rank * feature_dim)  # U_d: D -> r*C
+        # self.decoder_V = nn.Linear(degradation_dim, feature_dim * rank)  # V_d: D -> C*r
 
         # 稳定性优化：减小MLP复杂度，防止过拟合
         self.fusion_mlp = nn.Sequential(
@@ -130,59 +137,11 @@ class LowRankFusion(nn.Module):
         result = result.view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
 
         return result
-
-    def __init__(self, degradation_dim, feature_dim, rank=8):
-        """
-        双向低秩融合模块
-        Args:
-            degradation_dim (int): 退化向量维度 D
-            feature_dim (int): 特征向量维度 C  
-            rank (int): 低秩分解的秩 r
-        """
-        super().__init__()
-        self.D = degradation_dim
-        self.C = feature_dim
-        self.rank = rank
-
-        # 编码器退化图分解
-        self.encoder_U = nn.Linear(degradation_dim, rank * feature_dim)  # U_e: D -> r*C
-        self.encoder_V = nn.Linear(degradation_dim, feature_dim * rank)  # V_e: D -> C*r
-
-        # 解码器退化图分解  
-        self.decoder_U = nn.Linear(degradation_dim, rank * feature_dim)  # U_d: D -> r*C
-        self.decoder_V = nn.Linear(degradation_dim, feature_dim * rank)  # V_d: D -> C*r
-
-        # 创新的自适应融合权重学习模块
-        self.fusion_mlp = nn.Sequential(
-            nn.Linear(degradation_dim * 2, 256),  # 同时使用编码器和解码器退化信息
-            nn.ReLU(),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 3)  # 输出α, β, γ三个权重
-        )
-
-        self._init_weights()
-
-    def _init_weights(self):
-        """权重初始化"""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
+    
+    # 学习版
     def forward(self, encoder_feat, encoder_deg, decoder_feat, decoder_deg):
         """
-        前向传播
-        Args:
-            encoder_feat: (B, C, H, W) 编码器特征图
-            encoder_deg: (B, D, H, W) 编码器退化图
-            decoder_feat: (B, C, H, W) 解码器特征图
-            decoder_deg: (B, D, H, W) 解码器退化图
-        Returns:
-            result: (B, C, H, W) 融合后的特征
+        前向传播（简化版，无数值稳定性修饰）
         """
         B, C, H, W = encoder_feat.shape
         B, D, H, W = encoder_deg.shape
@@ -192,52 +151,51 @@ class LowRankFusion(nn.Module):
         assert decoder_deg.shape == (B, D, H, W), f"解码器退化图维度不匹配: {decoder_deg.shape}"
 
         # 展平到 (B*H*W, dim) 格式
-        enc_feat_flat = encoder_feat.permute(0, 2, 3, 1).contiguous().view(B*H*W, C)  # (BHW, C)
-        enc_deg_flat = encoder_deg.permute(0, 2, 3, 1).contiguous().view(B*H*W, D)   # (BHW, D)
-        dec_feat_flat = decoder_feat.permute(0, 2, 3, 1).contiguous().view(B*H*W, C) # (BHW, C)
-        dec_deg_flat = decoder_deg.permute(0, 2, 3, 1).contiguous().view(B*H*W, D)   # (BHW, D)
+        enc_feat_flat = encoder_feat.permute(0, 2, 3, 1).contiguous().view(B * H * W, C)  # (BHW, C)
+        enc_deg_flat = encoder_deg.permute(0, 2, 3, 1).contiguous().view(B * H * W, D)   # (BHW, D)
+        dec_feat_flat = decoder_feat.permute(0, 2, 3, 1).contiguous().view(B * H * W, C) # (BHW, C)
+        dec_deg_flat = decoder_deg.permute(0, 2, 3, 1).contiguous().view(B * H * W, D)   # (BHW, D)
 
-        # 编码器退化图低秩分解: U_e (r, C), V_e (C, r)
+        # 编码器退化图低秩分解
         U_e_params = self.encoder_U(enc_deg_flat)  # (BHW, r*C)
         V_e_params = self.encoder_V(enc_deg_flat)  # (BHW, C*r)
-        
-        U_e = U_e_params.view(B*H*W, self.rank, self.C)      # (BHW, r, C)
-        V_e = V_e_params.view(B*H*W, self.C, self.rank)      # (BHW, C, r)
+        U_e = U_e_params.view(B * H * W, self.rank, self.C)  # (BHW, r, C)
+        V_e = V_e_params.view(B * H * W, self.C, self.rank)  # (BHW, C, r)
 
-        # 解码器退化图低秩分解: U_d (r, C), V_d (C, r)  
+        # 解码器退化图低秩分解
         U_d_params = self.decoder_U(dec_deg_flat)  # (BHW, r*C)
         V_d_params = self.decoder_V(dec_deg_flat)  # (BHW, C*r)
-        
-        U_d = U_d_params.view(B*H*W, self.rank, self.C)      # (BHW, r, C)
-        V_d = V_d_params.view(B*H*W, self.C, self.rank)      # (BHW, C, r)
+        U_d = U_d_params.view(B * H * W, self.rank, self.C)  # (BHW, r, C)
+        V_d = V_d_params.view(B * H * W, self.C, self.rank)  # (BHW, C, r)
 
-        # 编码器分支: F_e' = U_e × V_e × F_e
-        enc_feat_expanded = enc_feat_flat.unsqueeze(-1)  # (BHW, C, 1)
+        # 编码器分支：F_e' = U_e × V_e × F_e
+        enc_feat_expanded = enc_feat_flat.unsqueeze(-1)               # (BHW, C, 1)
         temp_e = torch.bmm(V_e.transpose(-2, -1), enc_feat_expanded)  # (BHW, r, 1)
         transformed_enc = torch.bmm(U_e.transpose(-2, -1), temp_e).squeeze(-1)  # (BHW, C)
 
-        # 解码器分支: F_d' = U_d × V_d × F_d  
-        dec_feat_expanded = dec_feat_flat.unsqueeze(-1)  # (BHW, C, 1)
+        # 解码器分支：F_d' = U_d × V_d × F_d
+        dec_feat_expanded = dec_feat_flat.unsqueeze(-1)               # (BHW, C, 1)
         temp_d = torch.bmm(V_d.transpose(-2, -1), dec_feat_expanded)  # (BHW, r, 1)
         transformed_dec = torch.bmm(U_d.transpose(-2, -1), temp_d).squeeze(-1)  # (BHW, C)
 
-        # 创新的自适应融合策略
-        # 拼接编码器和解码器的退化信息作为融合权重的输入
+        # 自适应融合策略
         combined_deg = torch.cat([enc_deg_flat, dec_deg_flat], dim=-1)  # (BHW, 2*D)
         fusion_weights = self.fusion_mlp(combined_deg)                  # (BHW, 3)
-        fusion_weights = F.softmax(fusion_weights, dim=-1)             # 归一化权重
+        fusion_weights = F.softmax(fusion_weights, dim=-1)              # (BHW, 3)
 
-        α = fusion_weights[:, 0:1]  # (BHW, 1) - 编码器权重
-        β = fusion_weights[:, 1:2]  # (BHW, 1) - 解码器权重  
-        γ = fusion_weights[:, 2:3]  # (BHW, 1) - 交互权重
+        α = fusion_weights[:, 0:1]  # (BHW, 1)
+        β = fusion_weights[:, 1:2]  # (BHW, 1)
+        γ = fusion_weights[:, 2:3]  # (BHW, 1)
 
-        # 最终融合：result = α × F_e' + β × F_d' + γ × (F_e' ⊙ F_d')
-        result = α * transformed_enc + β * transformed_dec + γ * torch.tanh(transformed_enc + transformed_dec)  # (BHW, C)
+        # 最终融合
+        interaction_term = transformed_enc * transformed_dec
+        result = α * transformed_enc + β * transformed_dec + γ * interaction_term  # (BHW, C)
 
         # 重塑回原始特征图形状
         result = result.view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
 
         return result
+
 
 
 def test_low_rank_fusion():

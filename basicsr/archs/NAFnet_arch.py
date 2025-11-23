@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from basicsr.utils.registry import ARCH_REGISTRY
 
-from basicsr.archs.NAFNet_util import ContextExtractor, DegradationINR, LayerNorm2d, AvgPool2d, Local_Base
+from basicsr.archs.NAF_INR.NAFNet_util import ContextExtractor, DegradationINR, LayerNorm2d, AvgPool2d, Local_Base
 from basicsr.archs.NAF_INR.Fusion import LowRankFusion
 
 
@@ -570,17 +570,17 @@ if __name__ == "__main__":
     # 创建多层级INR注入的模型
     model = NAF_Baseline_INR(
         img_channel=3,
-        width=64,
+        width=32,
         middle_blk_num=8,
         enc_blk_nums=[1, 1, 1, 28],  # 4个编码器层级
         dec_blk_nums=[1, 1, 1, 1],   # 4个解码器层级
-        inr_d=64,
-        context_dim=256,
+        inr_d=32,
+        context_dim=128,
         degradation_types=20,
         injection_type='channel_modulation',
         inject_encoder=True,    # 编码器注入
         inject_decoder=True,     # 解码器注入
-        fusion_rank=16,
+        fusion_rank=8,
         fusion_locations=[1, 2, 3],  # 在编码器层1和3进行融合
     )
 

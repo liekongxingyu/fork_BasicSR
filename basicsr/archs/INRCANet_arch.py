@@ -1,7 +1,7 @@
 from torch import nn
 import torch
 from torch.nn import functional as F
-from basicsr.archs.NAFNet_util import ContextExtractor, DegradationINR, LayerNorm2d
+from basicsr.archs.NAF_INR.NAFNet_util import ContextExtractor, DegradationINR, LayerNorm2d
 from basicsr.utils.registry import ARCH_REGISTRY
 
 

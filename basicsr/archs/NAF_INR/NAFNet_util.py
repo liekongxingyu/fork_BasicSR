@@ -234,13 +234,15 @@ class DegradationINR(nn.Module):
         # 2️⃣ depthwise conv 平滑，获得空间一致性
         smoothed = self.smooth_conv(coarse)  # [B, K, h0, w0]
 
+        output = self.upsampler(smoothed)  # [B, K, H, W]
+
         # # 3️⃣ 全局汇聚（取平均或最大，也可以混合）
         # pooled = smoothed.mean(dim=[2, 3])  # [B, K]
 
         # # 4️⃣ softmax 归一化成概率分布
         # probs = torch.softmax(pooled, dim=-1)
 
-        return smoothed  # [B, K]
+        return output
 
     
     
