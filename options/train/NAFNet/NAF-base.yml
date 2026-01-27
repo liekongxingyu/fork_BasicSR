@@ -1,5 +1,5 @@
-
-name: NAFNet-All-width64-01
+# 从0训练
+name: NAF-base-width64-01
 model_type: NAFNetModel
 scale: 1
 num_gpu: 1
@@ -10,23 +10,9 @@ datasets:
     name: All-In-One
     type: PairedImageDataset
 
-    dataroot_gt1: ../Dataset/FoggyCityscapes/Gt
-    dataroot_lq1: ../Dataset/FoggyCityscapes/Lq
+    dataroot_gt1: ../Dataset/All-In-One(train-only)/Gt
+    dataroot_lq1: ../Dataset/All-In-One(train-only)/Lq
 
-    dataroot_gt2: ../Dataset/LowLightTrafficData/Gt
-    dataroot_lq2: ../Dataset/LowLightTrafficData/Lq
-
-    dataroot_gt3: ../Dataset/RainCityscapes/Gt
-    dataroot_lq3: ../Dataset/RainCityscapes/Lq
-
-    dataroot_gt4: ../Dataset/RainDS-syn/Gt
-    dataroot_lq4: ../Dataset/RainDS-syn/Lq
-
-    dataroot_gt5: ../Dataset/RSCityscapes/Gt
-    dataroot_lq5: ../Dataset/RSCityscapes/Lq
-
-    dataroot_gt6: ../Dataset/SnowTrafficData/Gt
-    dataroot_lq6: ../Dataset/SnowTrafficData/Lq
 
     filename_tmpl: '{}'
     io_backend:
@@ -53,13 +39,6 @@ datasets:
     io_backend:
       type: disk
   
-  val_2:
-    name: LowLightTrafficData
-    type: PairedImageDataset
-    dataroot_gt: ../Dataset/SnowTrafficData/Gt
-    dataroot_lq: ../Dataset/SnowTrafficData/Lq
-    io_backend:
-      type: disk
 
 
 network_g:
