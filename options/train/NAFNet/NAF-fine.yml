@@ -41,7 +41,7 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 1
-    batch_size_per_gpu: 3
+    batch_size_per_gpu: 30
     dataset_enlarge_ratio: 100
     prefetch_mode: ~
 
@@ -82,7 +82,7 @@ train:
     milestones: [20000]
     gamma: 0.5
 
-  total_iter: 200000
+  total_iter: 10200
   warmup_iter: -1 # no warm up
 
   # losses
@@ -93,11 +93,11 @@ train:
 
 # validation settings
 val:
-  val_freq: !!float 3000
+  val_freq: !!float 340
   save_img: false
   save_vis: false  # 🆕 新增：是否保存频域分解的可视化结果
   save_vis_freq: ~  # 🆕 新增：频域分解可视化结果保存频率
-  max_val_num: 2000  # 🆕 新增：最大验证图像数量
+  max_val_num: 500  # 🆕 新增：最大验证图像数量
 
 
   metrics:
@@ -112,8 +112,8 @@ val:
 
 # logging settings
 logger:
-  print_freq: 500
-  save_checkpoint_freq: !!float 3000
+  print_freq: 340
+  save_checkpoint_freq: !!float 340
   use_tb_logger: true
   wandb:
     project: ~
